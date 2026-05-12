@@ -6,9 +6,10 @@ import {
   MAX_DOT_ALIAS_VARIANTS,
   MAX_STANDALONE_DOT_ALIAS_VARIANTS
 } from '$lib/email-dot-aliases';
-import { ensureEmailRoutingRulesForUsers } from '$lib/server/cloudflare-email-routing';
+import { deleteEmailRoutingRulesForEmails, ensureEmailRoutingRulesForUsers } from '$lib/server/cloudflare-email-routing';
 import {
   activateDotAliasGenerationItemInDb,
+  deactivateDotAliasGenerationItemInDb,
   deleteDotAliasGenerationInDb,
   getDotAliasGenerationsFromDb,
   getUserAuthByEmail,
@@ -108,11 +109,54 @@ export const PATCH: RequestHandler = async ({ platform, request, locals }) => {
     return json({ error: 'Database belum dikonfigurasi' }, { status: 503 });
   }
 
-  const body = (await request.json().catch(() => null)) as { id?: string; alias?: string } | null;
+  const body = (await request.json().catch(() => null)) as { id?: string; alias?: string; used?: boolean } | null;
   const id = body?.id?.trim() ?? '';
   const alias = body?.alias?.trim().toLowerCase() ?? '';
   if (!id || !alias) {
     return json({ error: 'ID riwayat dan alias wajib dikirim' }, { status: 400 });
+  }
+
+  if (body?.used === false) {
+    const deactivated = await deactivateDotAliasGenerationItemInDb(db, {
+      generationId: id,
+      aliasEmail: alias,
+      provider: DOT_ALIAS_TOOL_PROVIDER
+    });
+
+    if (!deactivated.deactivated) {
+      return json({ error: getDeactivateAliasErrorMessage(deactivated.reason) }, { status: getDeactivateAliasStatus(deactivated.reason) });
+    }
+
+    const routing =
+      deactivated.mode === 'gmail'
+        ? {
+            ok: true,
+            skipped: true,
+            deletedRuleIds: [],
+            message: 'Status pemakaian alias Gmail dihapus dari tabel Gmail. Tidak ada routing Cloudflare yang perlu dihapus.'
+          }
+        : await deleteEmailRoutingRulesForEmails(platform?.env, deactivated.removedAliases, db).catch((error) => ({
+            ok: false,
+            skipped: false,
+            deletedRuleIds: [],
+            message: error instanceof Error ? error.message : String(error)
+          }));
+    const generations = await getDotAliasGenerationsFromDb(db);
+    const generation = generations.find((item) => item.id === id) ?? null;
+
+    return json({
+      ok: true,
+      generation,
+      generations,
+      activation: {
+        attempted: deactivated.mode !== 'gmail',
+        ok: routing.ok,
+        message: routing.message,
+        createdAliases: [],
+        existingAliases: [],
+        skippedAliases: []
+      }
+    });
   }
 
   const activated = await activateDotAliasGenerationItemInDb(db, {
@@ -247,5 +291,31 @@ function getActivateAliasErrorMessage(reason: string | undefined) {
       return 'Alias ini sudah dipakai oleh user lain.';
     default:
       return 'Alias belum bisa ditandai sebagai dipakai.';
+  }
+}
+
+function getDeactivateAliasStatus(reason: string | undefined) {
+  if (reason === 'missing_table') return 503;
+  if (reason === 'not_found' || reason === 'alias_not_found') return 404;
+  if (reason === 'protected_alias') return 409;
+  return 400;
+}
+
+function getDeactivateAliasErrorMessage(reason: string | undefined) {
+  switch (reason) {
+    case 'missing_table':
+      return 'Tabel alias belum tersedia. Jalankan migration terlebih dahulu.';
+    case 'not_found':
+      return 'Riwayat dot alias tidak ditemukan.';
+    case 'alias_not_found':
+      return 'Alias ini tidak ada di riwayat generate tersebut.';
+    case 'alias_not_active':
+      return 'Alias ini belum sedang ditandai dipakai.';
+    case 'source_user_not_found':
+      return 'Email sumber belum menjadi user di sistem.';
+    case 'protected_alias':
+      return 'Alias ini bukan alias yang dibuat dari halaman Dot Alias, jadi tidak bisa dilepas dari sini.';
+    default:
+      return 'Alias belum bisa dilepas.';
   }
 }

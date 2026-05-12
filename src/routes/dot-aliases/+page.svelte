@@ -19,6 +19,8 @@
     skippedAliases?: string[];
   };
 
+  const DOT_ALIAS_TOOL_PROVIDER = 'dot_alias_tool';
+
   export let data: PageData;
 
   let generations: DotAliasGenerationDto[] = data.generations;
@@ -139,8 +141,15 @@
     return alias.usedByEmail ? $t('dot.aliasUsedBy', { email: alias.usedByEmail }) : $t('dot.aliasUsed');
   }
 
-  async function markAliasUsed(alias: DotAliasUsageDto) {
-    if (!currentGeneration || alias.used || updatingAliasEmail) {
+  function canToggleAlias(alias: DotAliasUsageDto) {
+    if (!alias.used) {
+      return true;
+    }
+    return alias.source === 'gmail' || (alias.source === 'alias' && alias.provider === DOT_ALIAS_TOOL_PROVIDER);
+  }
+
+  async function toggleAliasUsage(alias: DotAliasUsageDto, used: boolean) {
+    if (!currentGeneration || updatingAliasEmail) {
       return;
     }
 
@@ -153,7 +162,7 @@
           accept: 'application/json',
           'content-type': 'application/json'
         },
-        body: JSON.stringify({ id: generationId, alias: alias.email })
+        body: JSON.stringify({ id: generationId, alias: alias.email, used })
       });
       const payload = (await response.json().catch(() => null)) as
         | {
@@ -165,7 +174,10 @@
         | null;
 
       if (!response.ok || !payload) {
-        void errorToast($t('dot.aliasMarkFailedTitle'), payload?.error ?? $t('dot.aliasMarkFailed'));
+        void errorToast(
+          used ? $t('dot.aliasMarkFailedTitle') : $t('dot.aliasUnmarkFailedTitle'),
+          payload?.error ?? (used ? $t('dot.aliasMarkFailed') : $t('dot.aliasUnmarkFailed'))
+        );
         return;
       }
 
@@ -179,10 +191,16 @@
       if (payload.activation && !payload.activation.ok) {
         void warningToast($t('dot.aliasMarkWarningTitle'), payload.activation.message);
       } else {
-        void successToast($t('dot.aliasMarkSuccessTitle'), $t('dot.aliasMarkSuccess', { email: alias.email }));
+        void successToast(
+          used ? $t('dot.aliasMarkSuccessTitle') : $t('dot.aliasUnmarkSuccessTitle'),
+          used ? $t('dot.aliasMarkSuccess', { email: alias.email }) : $t('dot.aliasUnmarkSuccess', { email: alias.email })
+        );
       }
     } catch {
-      void errorToast($t('dot.aliasMarkFailedTitle'), $t('dot.aliasMarkFailed'));
+      void errorToast(
+        used ? $t('dot.aliasMarkFailedTitle') : $t('dot.aliasUnmarkFailedTitle'),
+        used ? $t('dot.aliasMarkFailed') : $t('dot.aliasUnmarkFailed')
+      );
     } finally {
       updatingAliasEmail = '';
     }
@@ -437,9 +455,9 @@
                       <input
                         type="checkbox"
                         checked={alias.used || updatingAliasEmail === alias.email}
-                        disabled={alias.used || Boolean(updatingAliasEmail)}
-                        aria-label={alias.used ? aliasUsageLabel(alias) : $t('dot.aliasMarkUsedAria', { email: alias.email })}
-                        on:change={() => markAliasUsed(alias)}
+                        disabled={Boolean(updatingAliasEmail) || !canToggleAlias(alias)}
+                        aria-label={alias.used ? $t('dot.aliasUnmarkUsedAria', { email: alias.email }) : $t('dot.aliasMarkUsedAria', { email: alias.email })}
+                        on:change={(event) => toggleAliasUsage(alias, event.currentTarget.checked)}
                       />
                       <span>
                         {#if updatingAliasEmail === alias.email}
@@ -460,7 +478,7 @@
                           {:else}
                             {$t('dot.aliasUsedAlias')}
                           {/if}
-                          · {alias.usedByEmail}
+                          - {alias.usedByEmail}
                         </small>
                       {/if}
                     </div>

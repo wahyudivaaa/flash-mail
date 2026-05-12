@@ -179,6 +179,74 @@ export async function deleteEmailRoutingRulesForUser(
   };
 }
 
+export async function deleteEmailRoutingRulesForEmails(
+  env: CloudflareEmailRoutingEnv | undefined,
+  emails: string[],
+  db?: D1Database
+): Promise<DeleteEmailRoutingRuleResult> {
+  const token = env?.CLOUDFLARE_API_TOKEN?.trim() ?? '';
+  const workerName = resolveCloudflareWorkerName(env);
+  const managedEmails = [
+    ...new Set(
+      emails
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        .filter((email) => !isExternalMailDomain(email.split('@')[1] ?? ''))
+    )
+  ];
+
+  if (managedEmails.length === 0) {
+    return {
+      ok: true,
+      skipped: true,
+      deletedRuleIds: [],
+      message: 'Tidak ada alias domain Mail Flare yang perlu dihapus routing.'
+    };
+  }
+
+  if (!token || !workerName) {
+    return {
+      ok: false,
+      skipped: true,
+      deletedRuleIds: [],
+      message: 'API Email Routing Cloudflare belum dikonfigurasi'
+    };
+  }
+
+  const deletedRuleIds: string[] = [];
+  const groupedEmails = groupEmailsByDomain(managedEmails);
+  for (const [domain, domainEmails] of groupedEmails.entries()) {
+    const zoneId = await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, domain);
+    if (!zoneId) {
+      return {
+        ok: false,
+        skipped: true,
+        deletedRuleIds,
+        message: `Zone ID untuk ${domain} belum dikonfigurasi`
+      };
+    }
+
+    const rules = await listRoutingRules(token, zoneId);
+    const emailSet = new Set(domainEmails);
+    for (const rule of rules) {
+      const matchedEmail = getRuleMatchedEmail(rule);
+      const sendsToWorker = rule.actions?.some((action) => action.type === 'worker' && action.value?.includes(workerName));
+      if (!rule.id || !matchedEmail || !emailSet.has(matchedEmail) || !sendsToWorker) {
+        continue;
+      }
+      await deleteRoutingRule(token, zoneId, rule.id);
+      deletedRuleIds.push(rule.id);
+    }
+  }
+
+  return {
+    ok: true,
+    skipped: false,
+    deletedRuleIds,
+    message: deletedRuleIds.length > 0 ? 'Aturan Email Routing alias dihapus' : 'Tidak ada aturan Email Routing untuk alias ini'
+  };
+}
+
 export async function ensureEmailRoutingRulesForUsers(
   env: CloudflareEmailRoutingEnv | undefined,
   emails: string[],
