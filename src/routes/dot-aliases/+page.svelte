@@ -7,7 +7,7 @@
   import { getStandaloneDotAliasInfo, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
   import { locale, t } from '$lib/i18n';
   import { confirmDialog, errorToast, successToast, warningToast } from '$lib/sweet-alert';
-  import type { DotAliasGenerationDto } from '$lib/types/dto';
+  import type { DotAliasGenerationDto, DotAliasUsageDto } from '$lib/types/dto';
   import type { PageData } from './$types';
 
   type ActivationPayload = {
@@ -35,15 +35,16 @@
   $: emailPreview = getStandaloneDotAliasInfo(emailInput);
   $: emailPreviewAliasCount = emailPreview?.storableAliasCount ?? 0;
   $: currentGenerationInfo = currentGeneration ? getStandaloneDotAliasInfo(currentGeneration.sourceEmail) : null;
+  $: currentAliasUsages = currentGeneration ? getAliasUsageList(currentGeneration) : [];
+  $: usedAliasCount = currentAliasUsages.filter((alias) => alias.used).length;
+  $: availableAliasCount = Math.max(0, currentAliasUsages.length - usedAliasCount);
   $: filteredGenerations = normalizedHistoryQuery
     ? generations.filter((generation) =>
         [generation.sourceEmail, generation.provider, generation.createdBy]
           .some((field) => field.toLowerCase().includes(normalizedHistoryQuery))
       )
     : generations;
-  $: visibleAliases = currentGeneration
-    ? currentGeneration.aliases.filter((alias) => alias.toLowerCase().includes(normalizedAliasQuery))
-    : [];
+  $: visibleAliasUsages = currentAliasUsages.filter((alias) => alias.email.toLowerCase().includes(normalizedAliasQuery));
 
   async function generateDotAliases() {
     if (generating) {
@@ -108,6 +109,30 @@
     } catch {
       void errorToast($t('common.copyFailedTitle'), $t('common.copyFailed'));
     }
+  }
+
+  function getAliasUsageList(generation: DotAliasGenerationDto): DotAliasUsageDto[] {
+    const usageByEmail = new Map((generation.aliasUsage ?? []).map((alias) => [alias.email, alias]));
+    return generation.aliases.map((email) => {
+      const normalizedEmail = email.trim().toLowerCase();
+      return (
+        usageByEmail.get(normalizedEmail) ?? {
+          email: normalizedEmail,
+          used: false,
+          usedByUserId: '',
+          usedByEmail: '',
+          source: '',
+          provider: ''
+        }
+      );
+    });
+  }
+
+  function aliasUsageLabel(alias: DotAliasUsageDto) {
+    if (!alias.used) {
+      return $t('dot.aliasAvailable');
+    }
+    return alias.usedByEmail ? $t('dot.aliasUsedBy', { email: alias.usedByEmail }) : $t('dot.aliasUsed');
   }
 
   async function deleteGeneration(generation: DotAliasGenerationDto) {
@@ -306,6 +331,14 @@
                 <strong>{currentGeneration.aliasCount.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID')}</strong>
               </div>
               <div>
+                <span>{$t('dot.usedAliases')}</span>
+                <strong>{usedAliasCount.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID')}</strong>
+              </div>
+              <div>
+                <span>{$t('dot.availableAliases')}</span>
+                <strong>{availableAliasCount.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID')}</strong>
+              </div>
+              <div>
                 <span>{$t('dot.totalPossible')}</span>
                 <strong>{formatLargeCountLabel(currentGeneration.totalLabel)}</strong>
               </div>
@@ -324,24 +357,43 @@
                 <Icon name="search" size={16} />
                 <input id="dot-alias-search" bind:value={aliasQuery} placeholder={$t('dot.aliasSearch')} />
               </label>
-              <Button type="button" variant="secondary" disabled={visibleAliases.length === 0} on:click={() => copyAliases($t('dot.aliases'), visibleAliases)}>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={visibleAliasUsages.length === 0}
+                on:click={() => copyAliases($t('dot.aliases'), visibleAliasUsages.map((alias) => alias.email))}
+              >
                 <Icon name="content_copy" size={16} />
                 {$t('dot.copyVisible')}
               </Button>
             </div>
+
+            <p class="status-note">{$t('dot.aliasStatusHelp')}</p>
 
             {#if currentGeneration.truncated}
               <p class="limit-note">{$t('dot.limited', { count: MAX_STANDALONE_DOT_ALIAS_VARIANTS })}</p>
             {/if}
 
             <div class="alias-list">
-              {#if visibleAliases.length === 0}
+              {#if visibleAliasUsages.length === 0}
                 <div class="empty-state">{$t('dot.aliasEmpty')}</div>
               {:else}
-                {#each visibleAliases as alias (alias)}
-                  <div class="alias-row">
-                    <code>{alias}</code>
-                    <button type="button" on:click={() => copyAliases($t('common.email'), [alias])}>
+                {#each visibleAliasUsages as alias (alias.email)}
+                  <div class="alias-row" class:used={alias.used}>
+                    <label class="alias-status" title={aliasUsageLabel(alias)}>
+                      <input type="checkbox" checked={alias.used} disabled aria-label={aliasUsageLabel(alias)} />
+                      <span>{alias.used ? $t('dot.aliasUsed') : $t('dot.aliasAvailable')}</span>
+                    </label>
+                    <div class="alias-main">
+                      <code>{alias.email}</code>
+                      {#if alias.used && alias.usedByEmail}
+                        <small>
+                          {alias.source === 'user' ? $t('dot.aliasUsedDirect') : $t('dot.aliasUsedAlias')}
+                          · {alias.usedByEmail}
+                        </small>
+                      {/if}
+                    </div>
+                    <button type="button" on:click={() => copyAliases($t('common.email'), [alias.email])}>
                       <Icon name="content_copy" size={15} />
                       {$t('common.copy')}
                     </button>
@@ -463,6 +515,7 @@
   .hero-copy p,
   .form-note,
   .capacity-note,
+  .status-note,
   .limit-note,
   .activation-note p,
   .empty-panel span,
@@ -623,7 +676,7 @@
 
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
     gap: var(--space-3);
   }
 
@@ -667,10 +720,17 @@
     flex: 1;
   }
 
+  .status-note,
   .limit-note {
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--color-primary-500), transparent 92%);
     padding: 0.75rem 0.9rem;
+  }
+
+  .status-note {
+    color: var(--color-text-muted);
+    font-size: 0.82rem;
+    line-height: 1.45;
   }
 
   .alias-list {
@@ -684,14 +744,57 @@
   }
 
   .alias-row {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(7.4rem, auto) minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-3);
     border: 1px solid color-mix(in srgb, var(--color-outline), transparent 74%);
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 54%);
     padding: 0.64rem 0.75rem;
+  }
+
+  .alias-row.used {
+    border-color: color-mix(in srgb, var(--color-success), transparent 60%);
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--color-success), transparent 91%), transparent),
+      color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 54%);
+  }
+
+  .alias-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.48rem;
+    color: var(--color-text-muted);
+    font-family: var(--font-family-headline);
+    font-size: 0.72rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+
+  .alias-status input {
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    accent-color: var(--color-success);
+  }
+
+  .alias-row.used .alias-status {
+    color: var(--color-success);
+  }
+
+  .alias-main {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .alias-main small {
+    color: var(--color-text-muted);
+    font-size: 0.72rem;
+    overflow-wrap: anywhere;
   }
 
   code {
@@ -847,8 +950,8 @@
     }
 
     .alias-row {
-      align-items: flex-start;
-      flex-direction: column;
+      grid-template-columns: 1fr;
+      align-items: stretch;
     }
 
     .alias-row button {

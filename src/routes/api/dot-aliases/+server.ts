@@ -59,9 +59,10 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
 
   const activation = await maybeActivateMailFlareAliases(db, platform?.env, info.email, provider, aliases);
   const generations = await getDotAliasGenerationsFromDb(db);
+  const refreshedGeneration = generations.find((item) => item.id === generation.id) ?? generation;
   return json({
     ok: true,
-    generation,
+    generation: refreshedGeneration,
     generations,
     activation,
     capacity: info.capacity

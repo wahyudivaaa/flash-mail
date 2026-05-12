@@ -137,6 +137,15 @@ export interface GptPlusClaimDto {
   dotAliasCount: number;
 }
 
+export interface DotAliasUsageDto {
+  email: string;
+  used: boolean;
+  usedByUserId: string;
+  usedByEmail: string;
+  source: 'user' | 'alias' | '';
+  provider: string;
+}
+
 export interface DotAliasGenerationDto {
   id: string;
   sourceEmail: string;
@@ -147,4 +156,5 @@ export interface DotAliasGenerationDto {
   createdBy: string;
   createdAt: string;
   aliases: string[];
+  aliasUsage: DotAliasUsageDto[];
 }

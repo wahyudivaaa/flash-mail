@@ -1,4 +1,12 @@
-import type { DashboardDto, DotAliasGenerationDto, EmailDetailDto, EmailDto, GptPlusClaimDto, UserDto } from '$lib/types/dto';
+import type {
+  DashboardDto,
+  DotAliasGenerationDto,
+  DotAliasUsageDto,
+  EmailDetailDto,
+  EmailDto,
+  GptPlusClaimDto,
+  UserDto
+} from '$lib/types/dto';
 import type { WorkerSettingsPageDto } from '$lib/server/services/worker-settings.service';
 import PostalMime from 'postal-mime';
 
@@ -1001,13 +1009,19 @@ export async function getDotAliasGenerationsFromDb(db: D1Database | undefined): 
       .all<Record<string, unknown>>();
 
     const generations = response.results ?? [];
-    return await Promise.all(
+    const generationEntries = await Promise.all(
       generations.map(async (row) => {
         const id = String(row.id ?? '');
         const aliases = await getDotAliasGenerationItemsFromDb(db, id);
-        return mapDotAliasGenerationRow(row, aliases);
+        return { row, aliases };
       })
     );
+    const usageMap = await getDotAliasUsageMapFromDb(
+      db,
+      generationEntries.flatMap((generation) => generation.aliases)
+    );
+
+    return generationEntries.map(({ row, aliases }) => mapDotAliasGenerationRow(row, aliases, usageMap));
   } catch (error) {
     if (
       isMissingOptionalTableError(error, 'dot_alias_generations') ||
@@ -1100,10 +1114,11 @@ export async function storeDotAliasGenerationInDb(
       LIMIT 1
     `
     )
-    .bind(id)
-    .first<Record<string, unknown>>();
+      .bind(id)
+      .first<Record<string, unknown>>();
 
-  return mapDotAliasGenerationRow(created ?? {}, aliases);
+  const usageMap = await getDotAliasUsageMapFromDb(db, aliases);
+  return mapDotAliasGenerationRow(created ?? {}, aliases, usageMap);
 }
 
 export async function deleteDotAliasGenerationInDb(
@@ -1155,18 +1170,126 @@ async function getDotAliasGenerationItemsFromDb(db: D1Database, generationId: st
   return (response.results ?? []).map((row) => String(row.alias_email ?? '').trim().toLowerCase()).filter(Boolean);
 }
 
-function mapDotAliasGenerationRow(row: Record<string, unknown>, aliases: string[]): DotAliasGenerationDto {
+async function getDotAliasUsageMapFromDb(db: D1Database, emails: string[]): Promise<Map<string, DotAliasUsageDto>> {
+  const normalizedEmails = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+  const usageMap = new Map<string, DotAliasUsageDto>();
+  if (normalizedEmails.length === 0) {
+    return usageMap;
+  }
+
+  for (const emailChunk of chunkList(normalizedEmails, 80)) {
+    const placeholders = emailChunk.map(() => '?').join(', ');
+    const directUsers = await db
+      .prepare(
+        `
+        SELECT
+          lower(email) AS matched_email,
+          id AS user_id,
+          email AS user_email
+        FROM users
+        WHERE lower(email) IN (${placeholders})
+      `
+      )
+      .bind(...emailChunk)
+      .all<{ matched_email: string; user_id: string; user_email: string }>();
+
+    for (const row of directUsers.results ?? []) {
+      const email = String(row.matched_email ?? '').trim().toLowerCase();
+      if (!email) {
+        continue;
+      }
+      usageMap.set(email, {
+        email,
+        used: true,
+        usedByUserId: String(row.user_id ?? ''),
+        usedByEmail: String(row.user_email ?? ''),
+        source: 'user',
+        provider: 'mailflare'
+      });
+    }
+
+    try {
+      const aliasUsers = await db
+        .prepare(
+          `
+          SELECT
+            lower(a.alias_email) AS matched_email,
+            a.provider AS provider,
+            u.id AS user_id,
+            u.email AS user_email
+          FROM user_email_aliases a
+          INNER JOIN users u
+            ON u.id = a.user_id
+          WHERE lower(a.alias_email) IN (${placeholders})
+        `
+        )
+        .bind(...emailChunk)
+        .all<{ matched_email: string; provider: string; user_id: string; user_email: string }>();
+
+      for (const row of aliasUsers.results ?? []) {
+        const email = String(row.matched_email ?? '').trim().toLowerCase();
+        if (!email || usageMap.has(email)) {
+          continue;
+        }
+        usageMap.set(email, {
+          email,
+          used: true,
+          usedByUserId: String(row.user_id ?? ''),
+          usedByEmail: String(row.user_email ?? ''),
+          source: 'alias',
+          provider: String(row.provider ?? '')
+        });
+      }
+    } catch (error) {
+      if (!isMissingOptionalTableError(error, 'user_email_aliases')) {
+        throw error;
+      }
+    }
+  }
+
+  return usageMap;
+}
+
+function mapDotAliasGenerationRow(
+  row: Record<string, unknown>,
+  aliases: string[],
+  usageMap = new Map<string, DotAliasUsageDto>()
+): DotAliasGenerationDto {
+  const normalizedAliases = aliases.map((alias) => alias.trim().toLowerCase()).filter(Boolean);
+
   return {
     id: String(row.id ?? ''),
     sourceEmail: String(row.source_email ?? ''),
     provider: String(row.provider ?? 'mailflare'),
-    aliasCount: Number(row.alias_count ?? aliases.length),
-    totalLabel: String(row.total_label ?? aliases.length),
+    aliasCount: Number(row.alias_count ?? normalizedAliases.length),
+    totalLabel: String(row.total_label ?? normalizedAliases.length),
     truncated: Number(row.truncated ?? 0) === 1,
     createdBy: String(row.created_by ?? ''),
     createdAt: String(row.created_at ?? ''),
-    aliases
+    aliases: normalizedAliases,
+    aliasUsage: normalizedAliases.map((alias) => createDotAliasUsage(alias, usageMap.get(alias)))
   };
+}
+
+function createDotAliasUsage(email: string, usage?: DotAliasUsageDto): DotAliasUsageDto {
+  return (
+    usage ?? {
+      email,
+      used: false,
+      usedByUserId: '',
+      usedByEmail: '',
+      source: '',
+      provider: ''
+    }
+  );
+}
+
+function chunkList<T>(items: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 export async function createUniqueEmailAliasInDb(
