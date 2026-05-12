@@ -125,14 +125,24 @@ export const PATCH: RequestHandler = async ({ platform, request, locals }) => {
     return json({ error: getActivateAliasErrorMessage(activated.reason) }, { status: getActivateAliasStatus(activated.reason) });
   }
 
-  const routing = await ensureEmailRoutingRulesForUsers(platform?.env, activated.savedAliases, db).catch((error) => ({
-    ok: false,
-    skipped: false,
-    ruleIds: [],
-    createdRuleIds: [],
-    existingRuleIds: [],
-    message: error instanceof Error ? error.message : String(error)
-  }));
+  const routing =
+    activated.mode === 'gmail'
+      ? {
+          ok: true,
+          skipped: true,
+          ruleIds: [],
+          createdRuleIds: [],
+          existingRuleIds: [],
+          message: 'Alias Gmail ditandai sudah dipakai. Tidak perlu routing Cloudflare karena variasi dot tetap masuk ke inbox Gmail utama.'
+        }
+      : await ensureEmailRoutingRulesForUsers(platform?.env, activated.savedAliases, db).catch((error) => ({
+          ok: false,
+          skipped: false,
+          ruleIds: [],
+          createdRuleIds: [],
+          existingRuleIds: [],
+          message: error instanceof Error ? error.message : String(error)
+        }));
   const generations = await getDotAliasGenerationsFromDb(db);
   const generation = generations.find((item) => item.id === id) ?? null;
 
@@ -141,7 +151,7 @@ export const PATCH: RequestHandler = async ({ platform, request, locals }) => {
     generation,
     generations,
     activation: {
-      attempted: true,
+      attempted: activated.mode !== 'gmail',
       ok: routing.ok,
       message: routing.message,
       createdAliases: activated.createdAliases,

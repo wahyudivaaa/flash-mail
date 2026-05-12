@@ -142,7 +142,7 @@ export interface DotAliasUsageDto {
   used: boolean;
   usedByUserId: string;
   usedByEmail: string;
-  source: 'user' | 'alias' | '';
+  source: 'user' | 'alias' | 'gmail' | '';
   provider: string;
 }
 

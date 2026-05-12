@@ -789,6 +789,7 @@ interface StoreEmailAliasBatchResult {
 
 export interface ActivateDotAliasGenerationItemResult extends StoreEmailAliasBatchResult {
   activated: boolean;
+  mode?: 'gmail' | 'mailflare';
   reason?:
     | 'missing_table'
     | 'not_found'
@@ -1194,6 +1195,8 @@ export async function activateDotAliasGenerationItemInDb(
         `
         SELECT
           g.source_email AS source_email,
+          g.provider AS provider,
+          COALESCE(g.created_by, '') AS created_by,
           i.alias_email AS alias_email
         FROM dot_alias_generations g
         LEFT JOIN dot_alias_generation_items i
@@ -1204,15 +1207,49 @@ export async function activateDotAliasGenerationItemInDb(
       `
       )
       .bind(aliasEmail, generationId)
-      .first<{ source_email: string; alias_email: string | null }>();
+      .first<{ source_email: string; provider: string; created_by: string; alias_email: string | null }>();
 
     const sourceEmail = String(generation?.source_email ?? '').trim().toLowerCase();
+    const sourceProvider = String(generation?.provider ?? '').trim().toLowerCase();
+    const createdBy = String(generation?.created_by ?? '').trim();
     const matchedAlias = String(generation?.alias_email ?? '').trim().toLowerCase();
     if (!sourceEmail) {
       return { ...emptyResult, reason: 'not_found' };
     }
     if (!matchedAlias) {
       return { ...emptyResult, sourceEmail, reason: 'alias_not_found' };
+    }
+
+    if (sourceProvider === 'gmail' || sourceEmail.endsWith('@gmail.com')) {
+      const existing = await db
+        .prepare('SELECT id FROM gmail_dot_alias_usages WHERE lower(alias_email) = ? LIMIT 1')
+        .bind(matchedAlias)
+        .first<{ id: string }>();
+
+      await db
+        .prepare(
+          `
+          INSERT INTO gmail_dot_alias_usages (id, generation_id, source_email, alias_email, created_by, created_at)
+          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(alias_email) DO UPDATE SET
+            generation_id = excluded.generation_id,
+            source_email = excluded.source_email,
+            created_by = COALESCE(excluded.created_by, gmail_dot_alias_usages.created_by)
+        `
+        )
+        .bind(crypto.randomUUID(), generationId, sourceEmail, matchedAlias, createdBy || null)
+        .run();
+
+      return {
+        activated: true,
+        mode: 'gmail',
+        sourceEmail,
+        aliasEmail: matchedAlias,
+        savedAliases: [matchedAlias],
+        createdAliases: existing?.id ? [] : [matchedAlias],
+        existingAliases: existing?.id ? [matchedAlias] : [],
+        skippedAliases: []
+      };
     }
 
     const sourceUser = await getUserAuthByEmail(db, sourceEmail);
@@ -1242,6 +1279,7 @@ export async function activateDotAliasGenerationItemInDb(
     return {
       ...stored,
       activated: true,
+      mode: 'mailflare',
       sourceEmail,
       aliasEmail: matchedAlias
     };
@@ -1249,6 +1287,7 @@ export async function activateDotAliasGenerationItemInDb(
     if (
       isMissingOptionalTableError(error, 'dot_alias_generations') ||
       isMissingOptionalTableError(error, 'dot_alias_generation_items') ||
+      isMissingOptionalTableError(error, 'gmail_dot_alias_usages') ||
       isMissingOptionalTableError(error, 'user_email_aliases')
     ) {
       return { ...emptyResult, reason: 'missing_table' };
@@ -1349,6 +1388,40 @@ async function getDotAliasUsageMapFromDb(db: D1Database, emails: string[]): Prom
       }
     } catch (error) {
       if (!isMissingOptionalTableError(error, 'user_email_aliases')) {
+        throw error;
+      }
+    }
+
+    try {
+      const gmailAliases = await db
+        .prepare(
+          `
+          SELECT
+            lower(alias_email) AS matched_email,
+            source_email
+          FROM gmail_dot_alias_usages
+          WHERE lower(alias_email) IN (${placeholders})
+        `
+        )
+        .bind(...emailChunk)
+        .all<{ matched_email: string; source_email: string }>();
+
+      for (const row of gmailAliases.results ?? []) {
+        const email = String(row.matched_email ?? '').trim().toLowerCase();
+        if (!email || usageMap.has(email)) {
+          continue;
+        }
+        usageMap.set(email, {
+          email,
+          used: true,
+          usedByUserId: '',
+          usedByEmail: String(row.source_email ?? '').trim().toLowerCase(),
+          source: 'gmail',
+          provider: 'gmail'
+        });
+      }
+    } catch (error) {
+      if (!isMissingOptionalTableError(error, 'gmail_dot_alias_usages')) {
         throw error;
       }
     }

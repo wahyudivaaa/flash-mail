@@ -453,7 +453,13 @@
                       <code>{alias.email}</code>
                       {#if alias.used && alias.usedByEmail}
                         <small>
-                          {alias.source === 'user' ? $t('dot.aliasUsedDirect') : $t('dot.aliasUsedAlias')}
+                          {#if alias.source === 'user'}
+                            {$t('dot.aliasUsedDirect')}
+                          {:else if alias.source === 'gmail'}
+                            {$t('dot.aliasUsedGmail')}
+                          {:else}
+                            {$t('dot.aliasUsedAlias')}
+                          {/if}
                           · {alias.usedByEmail}
                         </small>
                       {/if}
