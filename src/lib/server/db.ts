@@ -1106,6 +1106,35 @@ export async function storeDotAliasGenerationInDb(
   return mapDotAliasGenerationRow(created ?? {}, aliases);
 }
 
+export async function deleteDotAliasGenerationInDb(
+  db: D1Database | undefined,
+  generationId: string
+): Promise<{ deleted: boolean; reason?: 'not_found' | 'missing_table' }> {
+  const id = generationId.trim();
+  if (!db || !id) {
+    return { deleted: false, reason: 'not_found' };
+  }
+
+  try {
+    const existing = await db.prepare('SELECT id FROM dot_alias_generations WHERE id = ? LIMIT 1').bind(id).first<{ id: string }>();
+    if (!existing?.id) {
+      return { deleted: false, reason: 'not_found' };
+    }
+
+    await db.prepare('DELETE FROM dot_alias_generation_items WHERE generation_id = ?').bind(id).run();
+    await db.prepare('DELETE FROM dot_alias_generations WHERE id = ?').bind(id).run();
+    return { deleted: true };
+  } catch (error) {
+    if (
+      isMissingOptionalTableError(error, 'dot_alias_generations') ||
+      isMissingOptionalTableError(error, 'dot_alias_generation_items')
+    ) {
+      return { deleted: false, reason: 'missing_table' };
+    }
+    throw error;
+  }
+}
+
 async function getDotAliasGenerationItemsFromDb(db: D1Database, generationId: string): Promise<string[]> {
   if (!generationId) {
     return [];

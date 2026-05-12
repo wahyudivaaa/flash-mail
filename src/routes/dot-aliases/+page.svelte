@@ -6,7 +6,7 @@
   import Icon from '$lib/components/atoms/Icon.svelte';
   import { getStandaloneDotAliasInfo, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
   import { locale, t } from '$lib/i18n';
-  import { errorToast, successToast, warningToast } from '$lib/sweet-alert';
+  import { confirmDialog, errorToast, successToast, warningToast } from '$lib/sweet-alert';
   import type { DotAliasGenerationDto } from '$lib/types/dto';
   import type { PageData } from './$types';
 
@@ -28,6 +28,7 @@
   let searchQuery = '';
   let aliasQuery = '';
   let generating = false;
+  let deletingGenerationId = '';
 
   $: normalizedHistoryQuery = searchQuery.trim().toLowerCase();
   $: normalizedAliasQuery = aliasQuery.trim().toLowerCase();
@@ -106,6 +107,63 @@
       void successToast($t('common.copySucceededTitle'), $t('common.copiedValue', { label }));
     } catch {
       void errorToast($t('common.copyFailedTitle'), $t('common.copyFailed'));
+    }
+  }
+
+  async function deleteGeneration(generation: DotAliasGenerationDto) {
+    if (deletingGenerationId) {
+      return;
+    }
+
+    const confirmed = await confirmDialog({
+      title: $t('dot.deleteTitle'),
+      text: $t('dot.deleteConfirm', { email: generation.sourceEmail }),
+      icon: 'warning',
+      detailLabel: $t('common.email'),
+      detailValue: generation.sourceEmail,
+      note: $t('dot.deleteNote', { count: generation.aliasCount }),
+      confirmButtonText: $t('common.delete'),
+      cancelButtonText: $t('common.cancel'),
+      danger: true
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    deletingGenerationId = generation.id;
+    try {
+      const response = await fetch('/api/dot-aliases', {
+        method: 'DELETE',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ id: generation.id })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            generations?: DotAliasGenerationDto[];
+          }
+        | null;
+
+      if (!response.ok) {
+        void errorToast($t('dot.deleteFailedTitle'), payload?.error ?? $t('dot.deleteFailed'));
+        return;
+      }
+
+      generations = payload?.generations ?? generations.filter((item) => item.id !== generation.id);
+      if (currentGeneration?.id === generation.id) {
+        currentGeneration = generations[0] ?? null;
+        aliasQuery = '';
+        activation = null;
+      }
+      void successToast($t('dot.deleteSuccessTitle'), $t('dot.deleteSuccess', { email: generation.sourceEmail }));
+    } catch {
+      void errorToast($t('dot.deleteFailedTitle'), $t('dot.deleteFailed'));
+    } finally {
+      deletingGenerationId = '';
     }
   }
 
@@ -317,18 +375,29 @@
               </div>
             {:else}
               {#each filteredGenerations as generation (generation.id)}
-                <button
-                  type="button"
-                  class:active={currentGeneration?.id === generation.id}
-                  on:click={() => {
-                    currentGeneration = generation;
-                    activation = null;
-                    aliasQuery = '';
-                  }}
-                >
-                  <span>{generation.sourceEmail}</span>
-                  <small>{generation.aliasCount} {$t('dot.aliases')} / {formatDate(generation.createdAt)}</small>
-                </button>
+                <div class="history-row" class:active={currentGeneration?.id === generation.id}>
+                  <button
+                    type="button"
+                    class="history-select"
+                    on:click={() => {
+                      currentGeneration = generation;
+                      activation = null;
+                      aliasQuery = '';
+                    }}
+                  >
+                    <span>{generation.sourceEmail}</span>
+                    <small>{generation.aliasCount} {$t('dot.aliases')} / {formatDate(generation.createdAt)}</small>
+                  </button>
+                  <button
+                    type="button"
+                    class="history-delete"
+                    aria-label={$t('dot.deleteAria', { email: generation.sourceEmail })}
+                    disabled={Boolean(deletingGenerationId)}
+                    on:click={() => deleteGeneration(generation)}
+                  >
+                    <Icon name={deletingGenerationId === generation.id ? 'progress_activity' : 'delete'} size={16} />
+                  </button>
+                </div>
               {/each}
             {/if}
           </div>
@@ -664,22 +733,52 @@
     padding-right: 0.1rem;
   }
 
-  .history-list button {
+  .history-row {
     display: grid;
-    gap: 0.2rem;
-    width: 100%;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
     border: 1px solid color-mix(in srgb, var(--color-outline), transparent 72%);
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 46%);
+    overflow: hidden;
+  }
+
+  .history-row.active {
+    border-color: color-mix(in srgb, var(--color-primary-500), transparent 48%);
+    background: color-mix(in srgb, var(--color-primary-500), transparent 91%);
+  }
+
+  .history-select {
+    display: grid;
+    gap: 0.2rem;
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    background: transparent;
     color: var(--color-text);
     cursor: pointer;
     padding: 0.78rem 0.85rem;
     text-align: left;
   }
 
-  .history-list button.active {
-    border-color: color-mix(in srgb, var(--color-primary-500), transparent 48%);
-    background: color-mix(in srgb, var(--color-primary-500), transparent 91%);
+  .history-delete {
+    display: inline-grid;
+    place-items: center;
+    width: 2.7rem;
+    border: 0;
+    border-left: 1px solid color-mix(in srgb, var(--color-outline), transparent 70%);
+    background: color-mix(in srgb, var(--color-danger), transparent 92%);
+    color: var(--color-danger);
+    cursor: pointer;
+  }
+
+  .history-delete:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
+
+  .history-delete:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-danger), transparent 86%);
   }
 
   .history-list span {
@@ -755,6 +854,10 @@
     .alias-row button {
       align-self: stretch;
       justify-content: center;
+    }
+
+    .history-row {
+      grid-template-columns: minmax(0, 1fr) 2.7rem;
     }
   }
 </style>

@@ -8,6 +8,7 @@ import {
 } from '$lib/email-dot-aliases';
 import { ensureEmailRoutingRulesForUsers } from '$lib/server/cloudflare-email-routing';
 import {
+  deleteDotAliasGenerationInDb,
   getDotAliasGenerationsFromDb,
   getUserAuthByEmail,
   storeDotAliasGenerationInDb,
@@ -65,6 +66,34 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
     activation,
     capacity: info.capacity
   });
+};
+
+export const DELETE: RequestHandler = async ({ platform, request, locals }) => {
+  if (locals.sessionRole !== 'owner') {
+    return json({ error: 'Akses ditolak' }, { status: 403 });
+  }
+
+  const db = platform?.env?.DB;
+  if (!db) {
+    return json({ error: 'Database belum dikonfigurasi' }, { status: 503 });
+  }
+
+  const body = (await request.json().catch(() => null)) as { id?: string } | null;
+  const id = body?.id?.trim() ?? '';
+  if (!id) {
+    return json({ error: 'ID riwayat wajib dikirim' }, { status: 400 });
+  }
+
+  const result = await deleteDotAliasGenerationInDb(db, id);
+  if (!result.deleted) {
+    if (result.reason === 'missing_table') {
+      return json({ error: 'Tabel riwayat dot alias belum tersedia' }, { status: 503 });
+    }
+    return json({ error: 'Riwayat dot alias tidak ditemukan' }, { status: 404 });
+  }
+
+  const generations = await getDotAliasGenerationsFromDb(db);
+  return json({ ok: true, generations });
 };
 
 async function maybeActivateMailFlareAliases(
