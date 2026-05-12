@@ -136,3 +136,15 @@ export interface GptPlusClaimDto {
   deactivationSender: string;
   dotAliasCount: number;
 }
+
+export interface DotAliasGenerationDto {
+  id: string;
+  sourceEmail: string;
+  provider: string;
+  aliasCount: number;
+  totalLabel: string;
+  truncated: boolean;
+  createdBy: string;
+  createdAt: string;
+  aliases: string[];
+}

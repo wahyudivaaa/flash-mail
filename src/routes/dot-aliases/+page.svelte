@@ -1,0 +1,653 @@
+<script lang="ts">
+  import AppSidebar from '$lib/components/organisms/AppSidebar.svelte';
+  import AppTopbar from '$lib/components/organisms/AppTopbar.svelte';
+  import Badge from '$lib/components/atoms/Badge.svelte';
+  import Button from '$lib/components/atoms/Button.svelte';
+  import Icon from '$lib/components/atoms/Icon.svelte';
+  import { getDotAliasInfo, MAX_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
+  import { locale, t } from '$lib/i18n';
+  import { errorToast, successToast, warningToast } from '$lib/sweet-alert';
+  import type { DotAliasGenerationDto } from '$lib/types/dto';
+  import type { PageData } from './$types';
+
+  type ActivationPayload = {
+    attempted: boolean;
+    ok: boolean;
+    message: string;
+    createdAliases?: string[];
+    existingAliases?: string[];
+    skippedAliases?: string[];
+  };
+
+  export let data: PageData;
+
+  let generations: DotAliasGenerationDto[] = data.generations;
+  let currentGeneration: DotAliasGenerationDto | null = data.generations[0] ?? null;
+  let activation: ActivationPayload | null = null;
+  let emailInput = '';
+  let searchQuery = '';
+  let aliasQuery = '';
+  let generating = false;
+
+  $: normalizedHistoryQuery = searchQuery.trim().toLowerCase();
+  $: normalizedAliasQuery = aliasQuery.trim().toLowerCase();
+  $: emailPreview = getDotAliasInfo(emailInput);
+  $: emailPreviewAliasCount = emailPreview
+    ? emailPreview.aliases.filter((alias) => alias !== emailPreview.email).length
+    : 0;
+  $: filteredGenerations = normalizedHistoryQuery
+    ? generations.filter((generation) =>
+        [generation.sourceEmail, generation.provider, generation.createdBy]
+          .some((field) => field.toLowerCase().includes(normalizedHistoryQuery))
+      )
+    : generations;
+  $: visibleAliases = currentGeneration
+    ? currentGeneration.aliases.filter((alias) => alias.toLowerCase().includes(normalizedAliasQuery))
+    : [];
+
+  async function generateDotAliases() {
+    if (generating) {
+      return;
+    }
+
+    const email = emailInput.trim().toLowerCase();
+    if (!email) {
+      void warningToast($t('dot.invalidTitle'), $t('dot.emailRequired'));
+      return;
+    }
+
+    generating = true;
+    activation = null;
+    try {
+      const response = await fetch('/api/dot-aliases', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ email })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            generation?: DotAliasGenerationDto;
+            generations?: DotAliasGenerationDto[];
+            activation?: ActivationPayload;
+          }
+        | null;
+
+      if (!response.ok || !payload?.generation) {
+        void errorToast($t('dot.invalidTitle'), payload?.error ?? $t('dot.invalidCopy'));
+        return;
+      }
+
+      currentGeneration = payload.generation;
+      generations = payload.generations ?? [payload.generation, ...generations];
+      activation = payload.activation ?? null;
+      aliasQuery = '';
+      void successToast(
+        $t('dot.createdTitle'),
+        $t('dot.createdCopy', { count: payload.generation.aliasCount, email: payload.generation.sourceEmail })
+      );
+    } catch {
+      void errorToast($t('dot.failedTitle'), $t('dot.failedCopy'));
+    } finally {
+      generating = false;
+    }
+  }
+
+  async function copyAliases(label: string, aliases: string[]) {
+    if (aliases.length === 0) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(aliases.join('\n'));
+      void successToast($t('common.copySucceededTitle'), $t('common.copiedValue', { label }));
+    } catch {
+      void errorToast($t('common.copyFailedTitle'), $t('common.copyFailed'));
+    }
+  }
+
+  function formatDate(value: string) {
+    const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+      return '-';
+    }
+
+    return date.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID');
+  }
+</script>
+
+<div class="layout-shell">
+  <AppSidebar active="dot-aliases" />
+  <section class="main">
+    <AppTopbar
+      title={$t('dot.title')}
+      breadcrumb="flash mail flare / dot aliases"
+      bind:searchQuery
+      searchPlaceholder={$t('dot.search')}
+    />
+
+    <div class="content">
+      <section class="hero-card">
+        <div class="hero-copy">
+          <span class="eyebrow">{$t('dot.eyebrow')}</span>
+          <h2>{$t('dot.heroTitle')}</h2>
+          <p>{$t('dot.heroCopy')}</p>
+        </div>
+
+        <form class="generator-form" on:submit|preventDefault={generateDotAliases}>
+          <label for="dot-email">{$t('dot.emailLabel')}</label>
+          <div class="input-row">
+            <input
+              id="dot-email"
+              type="email"
+              bind:value={emailInput}
+              autocomplete="email"
+              placeholder={$t('dot.emailPlaceholder')}
+            />
+            <Button type="submit" disabled={generating || !emailInput.trim()}>
+              <Icon name="auto_awesome" size={17} />
+              {generating ? $t('dot.generating') : $t('dot.generate')}
+            </Button>
+          </div>
+          <p class="form-note">
+            {#if emailPreview}
+              {$t('dot.preview', {
+                count: emailPreviewAliasCount,
+                total: emailPreview.totalLabel,
+                limit: MAX_DOT_ALIAS_VARIANTS
+              })}
+            {:else}
+              {$t('dot.inputHelp')}
+            {/if}
+          </p>
+        </form>
+      </section>
+
+      {#if activation}
+        <section class={`activation-note ${activation.ok ? 'ok' : 'warn'}`}>
+          <Icon name={activation.ok ? 'check_circle' : 'error'} size={20} />
+          <div>
+            <strong>{activation.attempted ? $t('dot.routingChecked') : $t('dot.savedOnly')}</strong>
+            <p>{activation.message}</p>
+          </div>
+        </section>
+      {/if}
+
+      <section class="workspace-grid">
+        <article class="result-card">
+          {#if currentGeneration}
+            <div class="section-head">
+              <div>
+                <span class="eyebrow">{$t('dot.latestResult')}</span>
+                <h3>{currentGeneration.sourceEmail}</h3>
+              </div>
+              <Badge tone={currentGeneration.provider === 'gmail' ? 'success' : 'primary'}>{currentGeneration.provider}</Badge>
+            </div>
+
+            <div class="stats-grid">
+              <div>
+                <span>{$t('dot.savedAliases')}</span>
+                <strong>{currentGeneration.aliasCount.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID')}</strong>
+              </div>
+              <div>
+                <span>{$t('dot.totalPossible')}</span>
+                <strong>{currentGeneration.totalLabel}</strong>
+              </div>
+              <div>
+                <span>{$t('dot.createdAt')}</span>
+                <strong>{formatDate(currentGeneration.createdAt)}</strong>
+              </div>
+            </div>
+
+            <div class="alias-toolbar">
+              <label class="alias-search" for="dot-alias-search">
+                <Icon name="search" size={16} />
+                <input id="dot-alias-search" bind:value={aliasQuery} placeholder={$t('dot.aliasSearch')} />
+              </label>
+              <Button type="button" variant="secondary" disabled={visibleAliases.length === 0} on:click={() => copyAliases($t('dot.aliases'), visibleAliases)}>
+                <Icon name="content_copy" size={16} />
+                {$t('dot.copyVisible')}
+              </Button>
+            </div>
+
+            {#if currentGeneration.truncated}
+              <p class="limit-note">{$t('dot.limited', { count: MAX_DOT_ALIAS_VARIANTS })}</p>
+            {/if}
+
+            <div class="alias-list">
+              {#if visibleAliases.length === 0}
+                <div class="empty-state">{$t('dot.aliasEmpty')}</div>
+              {:else}
+                {#each visibleAliases as alias (alias)}
+                  <div class="alias-row">
+                    <code>{alias}</code>
+                    <button type="button" on:click={() => copyAliases($t('common.email'), [alias])}>
+                      <Icon name="content_copy" size={15} />
+                      {$t('common.copy')}
+                    </button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          {:else}
+            <div class="empty-panel">
+              <Icon name="alternate_email" size={36} />
+              <strong>{$t('dot.emptyResultTitle')}</strong>
+              <span>{$t('dot.emptyResultCopy')}</span>
+            </div>
+          {/if}
+        </article>
+
+        <aside class="history-card">
+          <div class="section-head compact">
+            <div>
+              <span class="eyebrow">{$t('dot.historyEyebrow')}</span>
+              <h3>{$t('dot.historyTitle')}</h3>
+            </div>
+            <Badge tone="neutral">{generations.length}</Badge>
+          </div>
+
+          <div class="history-list">
+            {#if filteredGenerations.length === 0}
+              <div class="empty-state history-empty">
+                <strong>{$t('dot.emptyHistoryTitle')}</strong>
+                <span>{$t('dot.emptyHistoryCopy')}</span>
+              </div>
+            {:else}
+              {#each filteredGenerations as generation (generation.id)}
+                <button
+                  type="button"
+                  class:active={currentGeneration?.id === generation.id}
+                  on:click={() => {
+                    currentGeneration = generation;
+                    activation = null;
+                    aliasQuery = '';
+                  }}
+                >
+                  <span>{generation.sourceEmail}</span>
+                  <small>{generation.aliasCount} {$t('dot.aliases')} / {formatDate(generation.createdAt)}</small>
+                </button>
+              {/each}
+            {/if}
+          </div>
+        </aside>
+      </section>
+    </div>
+  </section>
+</div>
+
+<style>
+  .main {
+    min-width: 0;
+  }
+
+  .content {
+    padding: var(--space-5);
+    display: grid;
+    gap: var(--space-5);
+  }
+
+  .hero-card,
+  .result-card,
+  .history-card,
+  .activation-note {
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 68%);
+    background: color-mix(in srgb, var(--color-surface-card), transparent 5%);
+    box-shadow: var(--shadow-ambient);
+  }
+
+  .hero-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(21rem, 0.72fr);
+    gap: var(--space-5);
+    align-items: center;
+    border-radius: 1.3rem;
+    padding: var(--space-6);
+    background:
+      radial-gradient(circle at 10% 10%, color-mix(in srgb, var(--color-primary-500), transparent 84%), transparent 32%),
+      radial-gradient(circle at 92% 16%, color-mix(in srgb, var(--color-success), transparent 86%), transparent 28%),
+      color-mix(in srgb, var(--color-surface-card), transparent 4%);
+  }
+
+  .hero-copy {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .eyebrow {
+    color: var(--color-primary-500);
+    text-transform: uppercase;
+    letter-spacing: 0.13em;
+    font-size: var(--font-size-label-xs);
+    font-weight: 900;
+  }
+
+  h2 {
+    max-width: 42rem;
+    font-size: clamp(1.75rem, 3vw, 3rem);
+    line-height: 0.96;
+    letter-spacing: -0.06em;
+  }
+
+  .hero-copy p,
+  .form-note,
+  .limit-note,
+  .activation-note p,
+  .empty-panel span,
+  .empty-state span {
+    margin: 0;
+    color: var(--color-text-muted);
+    line-height: 1.55;
+  }
+
+  .generator-form {
+    display: grid;
+    gap: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 70%);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-surface-card), transparent 14%);
+    padding: var(--space-4);
+  }
+
+  .generator-form label {
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: var(--font-size-label-xs);
+    font-weight: 900;
+  }
+
+  .input-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-3);
+  }
+
+  input {
+    min-width: 0;
+    width: 100%;
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 56%);
+    border-radius: var(--radius-md);
+    outline: 0;
+    background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 44%);
+    color: var(--color-text);
+    padding: 0.8rem 0.9rem;
+  }
+
+  input:focus {
+    border-color: color-mix(in srgb, var(--color-primary-500), transparent 35%);
+    box-shadow: 0 0 0 0.18rem color-mix(in srgb, var(--color-primary-500), transparent 86%);
+  }
+
+  .activation-note {
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-start;
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+  }
+
+  .activation-note.ok {
+    color: var(--color-success);
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--color-success), transparent 90%), transparent),
+      var(--color-surface-card);
+  }
+
+  .activation-note.warn {
+    color: var(--color-warning);
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--color-warning), transparent 90%), transparent),
+      var(--color-surface-card);
+  }
+
+  .activation-note strong,
+  .activation-note p {
+    color: var(--color-text);
+  }
+
+  .workspace-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.38fr);
+    gap: var(--space-5);
+    align-items: start;
+  }
+
+  .result-card,
+  .history-card {
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+  }
+
+  .result-card {
+    min-height: 31rem;
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+
+  .section-head h3 {
+    margin-top: 0.18rem;
+    font-size: 1.32rem;
+    overflow-wrap: anywhere;
+  }
+
+  .section-head.compact h3 {
+    font-size: 1.05rem;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+
+  .stats-grid div {
+    display: grid;
+    gap: 0.25rem;
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 72%);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 48%);
+    padding: var(--space-3);
+  }
+
+  .stats-grid span {
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: var(--font-size-label-xs);
+    font-weight: 900;
+  }
+
+  .stats-grid strong {
+    overflow-wrap: anywhere;
+  }
+
+  .alias-toolbar {
+    display: flex;
+    gap: var(--space-3);
+    align-items: center;
+  }
+
+  .alias-search {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    color: var(--color-text-muted);
+  }
+
+  .alias-search input {
+    flex: 1;
+  }
+
+  .limit-note {
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-primary-500), transparent 92%);
+    padding: 0.75rem 0.9rem;
+  }
+
+  .alias-list {
+    max-height: 38rem;
+    min-height: 15rem;
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 0.55rem;
+    padding-right: 0.25rem;
+  }
+
+  .alias-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 74%);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 54%);
+    padding: 0.64rem 0.75rem;
+  }
+
+  code {
+    min-width: 0;
+    flex: 1;
+    color: var(--color-primary-500);
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.86rem;
+    overflow-wrap: anywhere;
+  }
+
+  .alias-row button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    border: 1px solid color-mix(in srgb, var(--color-primary-500), transparent 66%);
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--color-primary-500), transparent 91%);
+    color: var(--color-primary-500);
+    cursor: pointer;
+    font-family: var(--font-family-headline);
+    font-size: 0.72rem;
+    font-weight: 900;
+    padding: 0.38rem 0.6rem;
+  }
+
+  .history-card {
+    position: sticky;
+    top: 5.8rem;
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .history-list {
+    display: grid;
+    gap: 0.55rem;
+    max-height: 39rem;
+    overflow: auto;
+    padding-right: 0.1rem;
+  }
+
+  .history-list button {
+    display: grid;
+    gap: 0.2rem;
+    width: 100%;
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 72%);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 46%);
+    color: var(--color-text);
+    cursor: pointer;
+    padding: 0.78rem 0.85rem;
+    text-align: left;
+  }
+
+  .history-list button.active {
+    border-color: color-mix(in srgb, var(--color-primary-500), transparent 48%);
+    background: color-mix(in srgb, var(--color-primary-500), transparent 91%);
+  }
+
+  .history-list span {
+    font-family: var(--font-family-headline);
+    font-weight: 850;
+    overflow-wrap: anywhere;
+  }
+
+  .history-list small {
+    color: var(--color-text-muted);
+    font-weight: 700;
+  }
+
+  .empty-panel,
+  .empty-state {
+    min-height: 11rem;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: var(--space-2);
+    border: 1px dashed color-mix(in srgb, var(--color-outline), transparent 54%);
+    border-radius: var(--radius-lg);
+    color: var(--color-text-muted);
+    text-align: center;
+    padding: var(--space-4);
+  }
+
+  .empty-panel strong,
+  .empty-state strong {
+    color: var(--color-text);
+  }
+
+  .history-empty {
+    min-height: 14rem;
+  }
+
+  @media (max-width: 1080px) {
+    .hero-card,
+    .workspace-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .history-card {
+      position: static;
+    }
+  }
+
+  @media (max-width: 960px) {
+    .content {
+      padding: var(--space-4) var(--space-3);
+      gap: var(--space-4);
+    }
+
+    .hero-card,
+    .result-card,
+    .history-card {
+      padding: var(--space-4);
+    }
+
+    .input-row,
+    .stats-grid,
+    .alias-toolbar {
+      grid-template-columns: 1fr;
+      display: grid;
+    }
+
+    .alias-row {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .alias-row button {
+      align-self: stretch;
+      justify-content: center;
+    }
+  }
+</style>

@@ -7,7 +7,7 @@
   import Icon from '$lib/components/atoms/Icon.svelte';
   import { t } from '$lib/i18n';
 
-  export let active: 'dashboard' | 'users' | 'gpt-plus' | 'worker' = 'dashboard';
+  export let active: 'dashboard' | 'users' | 'gpt-plus' | 'dot-aliases' | 'worker' = 'dashboard';
 
   $: compact = $sidebarCollapsed;
 
@@ -88,6 +88,7 @@
     <SidebarNavItem href="/dashboard" icon="dashboard" label={$t('nav.dashboard')} active={active === 'dashboard'} compact={compact} />
     <SidebarNavItem href="/users" icon="group" label={$t('nav.users')} active={active === 'users'} compact={compact} />
     <SidebarNavItem href="/gpt-plus" icon="workspace_premium" label={$t('nav.gptPlus')} active={active === 'gpt-plus'} compact={compact} />
+    <SidebarNavItem href="/dot-aliases" icon="alternate_email" label={$t('nav.dotAliases')} active={active === 'dot-aliases'} compact={compact} />
     <SidebarNavItem href="/worker/settings" icon="settings_input_component" label={$t('nav.worker')} active={active === 'worker'} compact={compact} />
   </nav>
 

@@ -8,6 +8,7 @@
     { key: 'dashboard', href: '/dashboard', labelKey: 'nav.dashboard', icon: 'dashboard' },
     { key: 'users', href: '/users', labelKey: 'nav.usersShort', icon: 'group' },
     { key: 'gpt-plus', href: '/gpt-plus', labelKey: 'nav.gptPlus', icon: 'workspace_premium' },
+    { key: 'dot-aliases', href: '/dot-aliases', labelKey: 'nav.dotAliasesShort', icon: 'alternate_email' },
     { key: 'worker', href: '/worker/settings', labelKey: 'nav.worker', icon: 'settings_input_component' }
   ] as const;
 
@@ -19,6 +20,7 @@
 
   function resolveActiveKey(path: string): (typeof items)[number]['key'] | '' {
     if (path.startsWith('/worker')) return 'worker';
+    if (path.startsWith('/dot-aliases')) return 'dot-aliases';
     if (path.startsWith('/gpt-plus')) return 'gpt-plus';
     if (path.startsWith('/users')) return 'users';
     if (path.startsWith('/dashboard')) return 'dashboard';
@@ -65,7 +67,7 @@
     bottom: 0;
     z-index: 20;
     display: none;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 0.25rem;
     min-height: var(--mobile-nav-height);
     padding: 0.45rem 0.42rem calc(0.45rem + env(safe-area-inset-bottom));

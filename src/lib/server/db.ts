@@ -1,4 +1,4 @@
-import type { DashboardDto, EmailDetailDto, EmailDto, GptPlusClaimDto, UserDto } from '$lib/types/dto';
+import type { DashboardDto, DotAliasGenerationDto, EmailDetailDto, EmailDto, GptPlusClaimDto, UserDto } from '$lib/types/dto';
 import type { WorkerSettingsPageDto } from '$lib/server/services/worker-settings.service';
 import PostalMime from 'postal-mime';
 
@@ -973,6 +973,171 @@ export async function storeUserEmailAliasesIfAvailableInDb(
   }
 
   return result;
+}
+
+export async function getDotAliasGenerationsFromDb(db: D1Database | undefined): Promise<DotAliasGenerationDto[]> {
+  if (!db) {
+    return [];
+  }
+
+  try {
+    const response = await db
+      .prepare(
+        `
+        SELECT
+          id,
+          source_email,
+          provider,
+          alias_count,
+          total_label,
+          truncated,
+          COALESCE(created_by, '') AS created_by,
+          created_at
+        FROM dot_alias_generations
+        ORDER BY created_at DESC, id DESC
+        LIMIT 40
+      `
+      )
+      .all<Record<string, unknown>>();
+
+    const generations = response.results ?? [];
+    return await Promise.all(
+      generations.map(async (row) => {
+        const id = String(row.id ?? '');
+        const aliases = await getDotAliasGenerationItemsFromDb(db, id);
+        return mapDotAliasGenerationRow(row, aliases);
+      })
+    );
+  } catch (error) {
+    if (
+      isMissingOptionalTableError(error, 'dot_alias_generations') ||
+      isMissingOptionalTableError(error, 'dot_alias_generation_items')
+    ) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+export async function storeDotAliasGenerationInDb(
+  db: D1Database,
+  input: {
+    sourceEmail: string;
+    provider: string;
+    aliases: string[];
+    totalLabel: string;
+    truncated: boolean;
+    createdBy?: string;
+  }
+): Promise<DotAliasGenerationDto> {
+  const sourceEmail = input.sourceEmail.trim().toLowerCase();
+  const provider = (input.provider.trim() || 'mailflare').slice(0, 80);
+  const aliases = [...new Set(input.aliases.map((alias) => alias.trim().toLowerCase()).filter(Boolean))];
+  const totalLabel = input.totalLabel.trim() || String(aliases.length);
+  const createdBy = input.createdBy?.trim() ?? '';
+  if (!sourceEmail || aliases.length === 0) {
+    throw new Error('Invalid dot alias input');
+  }
+
+  const id = crypto.randomUUID();
+
+  try {
+    await db
+      .prepare(
+        `
+        INSERT INTO dot_alias_generations (
+          id,
+          source_email,
+          provider,
+          alias_count,
+          total_label,
+          truncated,
+          created_by,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `
+      )
+      .bind(id, sourceEmail, provider, aliases.length, totalLabel, input.truncated ? 1 : 0, createdBy || null)
+      .run();
+
+    for (const alias of aliases) {
+      await db
+        .prepare(
+          `
+          INSERT INTO dot_alias_generation_items (id, generation_id, alias_email, created_at)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(generation_id, alias_email) DO NOTHING
+        `
+        )
+        .bind(crypto.randomUUID(), id, alias)
+        .run();
+    }
+  } catch (error) {
+    if (
+      isMissingOptionalTableError(error, 'dot_alias_generations') ||
+      isMissingOptionalTableError(error, 'dot_alias_generation_items')
+    ) {
+      throw new Error('Tabel riwayat dot alias belum ada. Jalankan migration 0004_dot_alias_generations.sql.');
+    }
+    throw error;
+  }
+
+  const created = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        source_email,
+        provider,
+        alias_count,
+        total_label,
+        truncated,
+        COALESCE(created_by, '') AS created_by,
+        created_at
+      FROM dot_alias_generations
+      WHERE id = ?
+      LIMIT 1
+    `
+    )
+    .bind(id)
+    .first<Record<string, unknown>>();
+
+  return mapDotAliasGenerationRow(created ?? {}, aliases);
+}
+
+async function getDotAliasGenerationItemsFromDb(db: D1Database, generationId: string): Promise<string[]> {
+  if (!generationId) {
+    return [];
+  }
+
+  const response = await db
+    .prepare(
+      `
+      SELECT alias_email
+      FROM dot_alias_generation_items
+      WHERE generation_id = ?
+      ORDER BY created_at ASC, alias_email ASC
+    `
+    )
+    .bind(generationId)
+    .all<{ alias_email: string }>();
+
+  return (response.results ?? []).map((row) => String(row.alias_email ?? '').trim().toLowerCase()).filter(Boolean);
+}
+
+function mapDotAliasGenerationRow(row: Record<string, unknown>, aliases: string[]): DotAliasGenerationDto {
+  return {
+    id: String(row.id ?? ''),
+    sourceEmail: String(row.source_email ?? ''),
+    provider: String(row.provider ?? 'mailflare'),
+    aliasCount: Number(row.alias_count ?? aliases.length),
+    totalLabel: String(row.total_label ?? aliases.length),
+    truncated: Number(row.truncated ?? 0) === 1,
+    createdBy: String(row.created_by ?? ''),
+    createdAt: String(row.created_at ?? ''),
+    aliases
+  };
 }
 
 export async function createUniqueEmailAliasInDb(

@@ -12,7 +12,7 @@ The project is designed for personal, team, QA, and automation workflows where y
 - User creation with generated passwords.
 - Multiple managed domains through Cloudflare.
 - GPT Plus status detector from inbound OpenAI emails.
-- Gmail/custom-domain dot alias generator for GPT accounts.
+- Gmail/custom-domain dot alias generator for GPT accounts and a standalone saved dot-alias page.
 - Public API v1 for user creation and mailbox reading.
 - Telegram bot integration for notifications and admin commands.
 - Optional Outlook/Microsoft 365 planning endpoints.
@@ -137,6 +137,7 @@ If you use the incremental migrations folder instead of the consolidated schema,
 pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0001_gpt_plus_claims.sql
 pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0002_gpt_plus_deactivation.sql
 pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0003_user_email_aliases.sql
+pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0004_dot_alias_generations.sql
 ```
 
 ### 4. Configure `wrangler.toml`
@@ -334,6 +335,10 @@ The GPT Plus page detects plan activation and deactivation emails from inbound m
 - deactivation state
 
 For Gmail and managed-domain accounts, the page also includes a dot-alias generator. For managed Cloudflare domains, activated dot aliases are stored in D1 and connected to Cloudflare Email Routing.
+
+## Dot Alias Generator
+
+The standalone `/dot-aliases` page accepts one source email, generates safe dot-trick variations, stores the generated batch in D1, and shows a searchable history. If the source email already belongs to an active Mail Flare user on a managed Cloudflare domain, the backend also stores those aliases against that user and attempts to create Cloudflare Email Routing rules automatically.
 
 ## Outlook / Microsoft 365 Notes
 
