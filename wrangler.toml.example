@@ -1,0 +1,32 @@
+name = "mailflare-web"
+main = ".svelte-kit/cloudflare/_worker.js"
+compatibility_date = "2026-04-07"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+# Domain UI/API aplikasi (contoh: app.example.com)
+pattern = "<app-domain>"
+custom_domain = true
+
+[assets]
+directory = ".svelte-kit/cloudflare"
+binding = "ASSETS"
+
+[vars]
+# Domain alamat inbox user (contoh: username@example.com)
+MAILFLARE_USER_DOMAIN = "<your-root-email-domain>"
+# Base URL UI/API aplikasi yang dipakai untuk notify internal
+MAILFLARE_NOTIFY_URL = "https://<app-domain>"
+# Cloudflare metadata untuk domain default. Token rahasia jangan ditulis di sini;
+# simpan dengan `wrangler secret put CLOUDFLARE_API_TOKEN`.
+CLOUDFLARE_ACCOUNT_ID = "<cloudflare-account-id>"
+CLOUDFLARE_ZONE_ID = "<cloudflare-zone-id>"
+CLOUDFLARE_ZONE_NAME = "<your-root-email-domain>"
+MAILFLARE_EMAIL_WORKER_NAME = "mailflare-web"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mailflarecloud-db"
+database_id = "replace-with-your-d1-database-id"

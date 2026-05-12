@@ -1,0 +1,35 @@
+# Berkas ini adalah CONTOH konfigurasi lingkungan lokal.
+# Salin/duplikat file ini lalu ubah namanya menjadi `.dev.vars` (tanpa .example).
+# Lingkungan lokal (pnpm cf:dev) akan membaca file `.dev.vars` sebagai Secrets.
+
+# 1. SETUP_TOKEN (Wajib)
+# Sandi aman yang ditagih oleh aplikasi ketika ada orang pertama kali mencoba masuk, agar mereka diizinkan membuat akun admin pertama.
+SETUP_TOKEN="<change-this-long-random-bootstrap-token>"
+
+# 2. TURNSTILE CAPTCHA (Wajib)
+# Gunakan test key resmi Cloudflare di lokal, atau key asli untuk domain Anda.
+# Di production, simpan TURNSTILE_SECRET_KEY via `wrangler secret put`.
+TURNSTILE_SITE_KEY="<cloudflare-turnstile-site-key>"
+TURNSTILE_SECRET_KEY="<cloudflare-turnstile-secret-key>"
+
+# 3. TELEGRAM INTEGRATION (Opsional)
+# Hanya diperlukan bila bot Telegram dihidupkan untuk fitur notifikasi inbox beruntun.
+TELEGRAM_BOT_TOKEN="<telegram-bot-token>"
+TELEGRAM_WEBHOOK_SECRET="<long-random-webhook-secret>"
+TELEGRAM_INTERNAL_SECRET="<long-random-internal-secret>"
+
+# 4. CLOUDFLARE DOMAIN AUTOMATION (Opsional)
+# Diperlukan jika ingin menambah mailbox domain langsung dari UI / Worker Settings
+# atau menjalankan script `pnpm cf:mail-domain:setup -- --domain example.com`.
+CLOUDFLARE_API_TOKEN="<cloudflare-api-token>"
+CLOUDFLARE_ACCOUNT_ID="<cloudflare-account-id>"
+CLOUDFLARE_EMAIL_WORKER_NAME="<worker-name>"
+
+# 5. OUTLOOK / MICROSOFT 365 AUTOMATION (Opsional)
+# Diperlukan nanti jika fitur Outlook dipakai untuk membuat mailbox via Microsoft Graph.
+# Domain awal tenant biasanya berbentuk namaanda.onmicrosoft.com.
+OUTLOOK_TENANT_ID="<microsoft-tenant-id>"
+OUTLOOK_CLIENT_ID="<azure-app-client-id>"
+OUTLOOK_CLIENT_SECRET="<azure-app-client-secret>"
+OUTLOOK_LICENSE_SKU_ID="<exchange-or-m365-license-sku-id>"
+OUTLOOK_INITIAL_DOMAIN="<tenant>.onmicrosoft.com"

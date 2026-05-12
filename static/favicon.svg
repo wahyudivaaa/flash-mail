@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MailFlare cloud logo">
+  <defs>
+    <linearGradient id="cloud-blue" x1="10" y1="12" x2="54" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#003dc7" />
+      <stop offset="1" stop-color="#0051ff" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#cloud-blue)" />
+  <path
+    fill="#ffffff"
+    d="M22.1 45.5h22.4c6 0 10.9-4.7 10.9-10.5 0-5.4-4.2-9.9-9.5-10.5C43.8 17.1 37.1 12 29.4 12c-8.9 0-16.2 6.8-17 15.4C7.7 29.1 4.5 33.5 4.5 38.6c0 6.2 5 11.2 11.2 11.2h6.4c1.2 0 2.2-1 2.2-2.2s-1-2.1-2.2-2.1Zm-6.4 0c-3.8 0-6.8-3.1-6.8-6.9 0-3.7 2.9-6.8 6.5-6.9l2-.1-.2-2c0-.4-.1-.8-.1-1.3 0-6.6 5.5-12 12.3-12 6 0 11.2 4.3 12.1 10.1l.3 1.8h1.8c4.1 0 7.5 3.1 7.5 6.9s-3 6.8-6.6 6.8H15.7v3.6Z"
+  />
+</svg>
