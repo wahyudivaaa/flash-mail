@@ -27,6 +27,7 @@ Yang termasuk:
 - Validasi API key untuk seluruh endpoint `/api/public/v1/*`.
 - Endpoint public:
   - `POST /api/public/v1/create_user`
+  - `GET /api/public/v1/domains`
   - `GET /api/public/v1/list_user`
   - `GET /api/public/v1/user_mailbox`
   - `GET /api/public/v1/read_email`
@@ -140,7 +141,48 @@ Response sukses (`201`):
 }
 ```
 
-### 5.2 `GET /api/public/v1/list_user`
+### 5.2 `GET /api/public/v1/domains`
+
+Endpoint ini dipakai aplikasi eksternal untuk tombol refresh domain/dropdown layanan API.
+
+Response sukses (`200`):
+
+```json
+{
+  "ok": true,
+  "data": {
+    "service": {
+      "id": "flash-mail-flare",
+      "label": "Flash Mail Flare",
+      "apiVersion": "v1",
+      "apiBaseUrl": "https://mail.example.com/api/public/v1",
+      "compatibility": ["shiromail"]
+    },
+    "defaultDomain": "example.com",
+    "domains": [
+      {
+        "domain": "example.com",
+        "isDefault": true,
+        "status": "active",
+        "emailRoutingStatus": "configured",
+        "provider": "mailflare",
+        "providerLabel": "Mail Flare",
+        "routingMode": "cloudflare_email_routing",
+        "canCreateUser": true
+      }
+    ],
+    "endpoints": {
+      "createUser": "https://mail.example.com/api/public/v1/create_user",
+      "listUser": "https://mail.example.com/api/public/v1/list_user",
+      "userMailbox": "https://mail.example.com/api/public/v1/user_mailbox",
+      "readEmail": "https://mail.example.com/api/public/v1/read_email",
+      "domains": "https://mail.example.com/api/public/v1/domains"
+    }
+  }
+}
+```
+
+### 5.3 `GET /api/public/v1/list_user`
 
 Query:
 
@@ -173,7 +215,7 @@ Response sukses (`200`):
 }
 ```
 
-### 5.3 `GET /api/public/v1/user_mailbox`
+### 5.4 `GET /api/public/v1/user_mailbox`
 
 Query:
 
@@ -213,9 +255,9 @@ Response sukses (`200`):
 }
 ```
 
-### 5.4 `GET /api/public/v1/read_email`
+### 5.5 `GET /api/public/v1/read_email`
 
-### 5.5 `GET /api/public/v1/read_emai` (alias)
+### 5.6 `GET /api/public/v1/read_emai` (alias)
 
 Query:
 
@@ -424,6 +466,13 @@ export API_KEY="cmf_v1_xxx"
 
 # PowerShell
 $env:API_KEY="cmf_v1_xxx"
+```
+
+`domains`:
+
+```bash
+curl -X GET "http://127.0.0.1:8787/api/public/v1/domains" \
+  -H "x-api-key: $API_KEY"
 ```
 
 `list_user`:

@@ -274,8 +274,8 @@ DELETE FROM emails;
 DELETE FROM users;
 INSERT INTO users (id, email, display_name, password_hash, created_at, updated_at)
 VALUES
-  ('u-owner-1', 'owner@example.com', 'owner', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('u-member-1', 'memberone@example.com', 'memberone', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+  ('u-owner-1', 'owner@example.com', 'owner', 'smoke-password-hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('u-member-1', 'memberone@example.com', 'memberone', 'smoke-password-hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO api_keys (id, key_hash, name, created_by, created_at, revoked_at)
 VALUES ('k-smoke-2', '${apiKeyHash}', 'smoke', 'smoke-test', CURRENT_TIMESTAMP, NULL);
 INSERT INTO emails (
@@ -376,6 +376,19 @@ async function main() {
     assertCondition(invalidKey.status === 401, 'invalid key should return 401');
     assertCondition(invalidKey.body?.error?.code === 'UNAUTHORIZED', 'invalid key should return UNAUTHORIZED');
     results.push({ step: 'invalid_key_list_user', status: invalidKey.status, ok: true });
+
+    const domains = await callJson({
+      method: 'GET',
+      url: `${baseUrl}/api/public/v1/domains`,
+      headers: {
+        'x-api-key': apiKey
+      }
+    });
+    assertCondition(domains.status === 200, 'domains should return 200');
+    assertCondition(domains.body?.ok === true, 'domains should return ok=true');
+    assertCondition(Array.isArray(domains.body?.data?.domains), 'domains should return domains array');
+    assertCondition(String(domains.body?.data?.endpoints?.createUser ?? '').endsWith('/create_user'), 'domains should return endpoint map');
+    results.push({ step: 'domains', status: domains.status, ok: true });
 
     const listBefore = await callJson({
       method: 'GET',

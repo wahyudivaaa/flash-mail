@@ -30,6 +30,12 @@
     activeKey: ApiKeyRecordView | null;
   }
 
+  const PUBLIC_API_PATH = '/api/public/v1';
+  const API_SERVICE_OPTIONS = [
+    { id: 'flash-mail-flare', label: 'Flash Mail Flare' },
+    { id: 'shiromail-compatible', label: 'ShiroMail Compatible' }
+  ];
+
   let settings: WorkerSettingsDto = { ...data.settings };
   let botTokenInput = '';
   let webhookSecretInput = '';
@@ -55,6 +61,12 @@
   let apiKeyMessage = '';
   let apiKeyError = '';
   let apiKeyPlaintext = '';
+  let apiServiceId = API_SERVICE_OPTIONS[0].id;
+  let apiSelectedDomain = '';
+  let apiServiceRefreshing = false;
+  let publicApiBaseUrl = PUBLIC_API_PATH;
+  let selectedApiServiceLabel = API_SERVICE_OPTIONS[0].label;
+  let apiServiceKeyPreview = '';
   let outlookDomain = '';
   let outlookInitialDomain = '';
   let outlookVerificationTxt = '';
@@ -72,6 +84,11 @@
   $: if (!outlookDomain && mailDomains.length > 0) {
     outlookDomain = mailDomains.find((domain) => domain.isDefault)?.domain ?? mailDomains[0].domain;
   }
+  $: if (mailDomains.length > 0 && (!apiSelectedDomain || !mailDomains.some((domain) => domain.domain === apiSelectedDomain))) {
+    apiSelectedDomain = mailDomains.find((domain) => domain.isDefault)?.domain ?? mailDomains[0].domain;
+  }
+  $: selectedApiServiceLabel = API_SERVICE_OPTIONS.find((service) => service.id === apiServiceId)?.label ?? API_SERVICE_OPTIONS[0].label;
+  $: apiServiceKeyPreview = apiKeyPlaintext || (apiKeyStatus.hasActiveKey ? $t('worker.apiServiceKeyHidden') : $t('worker.apiServiceKeyMissing'));
   $: outlookMailboxEmail =
     outlookMailboxLocalPart.trim() && outlookDomain
       ? `${outlookMailboxLocalPart.trim().toLowerCase().replace(/^@+/, '')}@${outlookDomain}`
@@ -108,7 +125,63 @@
     return value || '-';
   }
 
+  async function copyTextValue(value: string, label: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(value);
+      void successToast($t('common.copySucceededTitle'), $t('common.copiedValue', { label }));
+    } catch {
+      void errorToast($t('common.copyFailedTitle'), $t('common.copyFailed'));
+    }
+  }
+
+  function buildApiServiceConfig(): Record<string, unknown> {
+    return {
+      service: apiServiceId,
+      serviceLabel: selectedApiServiceLabel,
+      urlApi: publicApiBaseUrl,
+      domain: apiSelectedDomain,
+      apiKey: apiKeyPlaintext || '<paste-cmf_v1-api-key>',
+      authHeader: 'x-api-key',
+      refreshDomainEndpoint: `${publicApiBaseUrl}/domains`,
+      endpoints: {
+        createUser: `${publicApiBaseUrl}/create_user`,
+        listUser: `${publicApiBaseUrl}/list_user`,
+        userMailbox: `${publicApiBaseUrl}/user_mailbox`,
+        readEmail: `${publicApiBaseUrl}/read_email`,
+        domains: `${publicApiBaseUrl}/domains`
+      }
+    };
+  }
+
+  async function copyApiServiceConfig(): Promise<void> {
+    await copyTextValue(JSON.stringify(buildApiServiceConfig(), null, 2), $t('worker.apiServiceConfig'));
+  }
+
+  async function copyApiServiceCurl(): Promise<void> {
+    const apiKey = apiKeyPlaintext || '<paste-cmf_v1-api-key>';
+    const command = `curl "${publicApiBaseUrl}/domains" -H "x-api-key: ${apiKey}"`;
+    await copyTextValue(command, $t('worker.apiServiceCurl'));
+  }
+
+  async function refreshApiServiceConfig(): Promise<void> {
+    if (apiServiceRefreshing) {
+      return;
+    }
+
+    apiServiceRefreshing = true;
+    try {
+      await Promise.all([loadApiKeyStatus(), loadMailDomains()]);
+      if (apiKeyError || domainError) {
+        return;
+      }
+      void successToast($t('worker.apiServiceRefreshDoneTitle'), $t('worker.apiServiceRefreshDone'));
+    } finally {
+      apiServiceRefreshing = false;
+    }
+  }
+
   onMount(() => {
+    publicApiBaseUrl = `${window.location.origin}${PUBLIC_API_PATH}`;
     void loadApiKeyStatus();
     void loadMailDomains();
   });
@@ -632,12 +705,7 @@
   async function copyOutlookRecord(record: OutlookDnsRecordDto): Promise<void> {
     const priority = record.priority !== undefined ? ` priority=${record.priority}` : '';
     const value = `${record.type} ${record.name} -> ${record.value}${priority}`;
-    try {
-      await navigator.clipboard.writeText(value);
-      void successToast($t('common.copySucceededTitle'), $t('common.copiedValue', { label: record.type }));
-    } catch {
-      void errorToast($t('common.copyFailedTitle'), $t('common.copyFailed'));
-    }
+    await copyTextValue(value, record.type);
   }
 
   async function createOutlookMailbox(): Promise<void> {
@@ -1030,6 +1098,84 @@
   <CardSurface>
     <h2>{$t('worker.apiHeading')}</h2>
     <p class="text-muted">{$t('worker.apiDescription')} <code class="inline-code">cmf_v1_</code>.</p>
+    <div class="api-service-panel">
+      <div class="api-service-head">
+        <div>
+          <h3>{$t('worker.apiServiceHeading')}</h3>
+          <p class="text-muted">{$t('worker.apiServiceDescription')}</p>
+        </div>
+        <Badge tone={apiKeyStatus.hasActiveKey ? 'success' : 'warning'}>
+          {apiKeyStatus.hasActiveKey ? $t('worker.apiActive') : $t('worker.apiMissing')}
+        </Badge>
+      </div>
+
+      <div class="api-service-row">
+        <div class="field">
+          <label for="api-service">{$t('worker.apiService')}</label>
+          <select id="api-service" bind:value={apiServiceId}>
+            {#each API_SERVICE_OPTIONS as service}
+              <option value={service.id}>{service.label}</option>
+            {/each}
+          </select>
+        </div>
+        <span class="api-service-hint">{$t('worker.apiServiceChangedHint')}</span>
+      </div>
+
+      <div class="api-service-grid">
+        <div class="api-service-copy-field">
+          <FieldLabelInput label={$t('worker.apiServiceUrl')} value={publicApiBaseUrl} readonly />
+          <Button type="button" variant="ghost" on:click={() => copyTextValue(publicApiBaseUrl, $t('worker.apiServiceUrl'))}>
+            {$t('common.copy')}
+          </Button>
+        </div>
+
+        <div class="api-service-copy-field">
+          <div class="field">
+            <label for="api-service-domain">{$t('common.domain')}</label>
+            <select id="api-service-domain" bind:value={apiSelectedDomain} disabled={mailDomains.length === 0}>
+              {#if mailDomains.length === 0}
+                <option value="">{$t('worker.apiServiceDomainEmpty')}</option>
+              {:else}
+                {#each mailDomains as domain (domain.domain)}
+                  <option value={domain.domain}>{domain.domain}{domain.isDefault ? ` - ${$t('worker.defaultLabel')}` : ''}</option>
+                {/each}
+              {/if}
+            </select>
+          </div>
+          <Button type="button" variant="secondary" on:click={refreshApiServiceConfig} disabled={apiServiceRefreshing || domainsLoading || apiKeyLoading}>
+            {apiServiceRefreshing ? $t('common.refreshing') : $t('worker.apiServiceDomainRefresh')}
+          </Button>
+        </div>
+
+        <div class="api-service-copy-field api-service-copy-field-wide">
+          <FieldLabelInput label={$t('worker.apiServiceApiKey')} value={apiServiceKeyPreview} readonly />
+          <Button
+            type="button"
+            variant="ghost"
+            on:click={() => apiKeyPlaintext && copyTextValue(apiKeyPlaintext, $t('worker.apiServiceApiKey'))}
+            disabled={!apiKeyPlaintext}
+          >
+            {$t('common.copy')}
+          </Button>
+        </div>
+      </div>
+
+      <div class="api-service-endpoints">
+        <div class="label">{$t('worker.apiServiceEndpointHelp')}</div>
+        <code>{publicApiBaseUrl}/domains</code>
+        <code>{publicApiBaseUrl}/create_user</code>
+        <code>{publicApiBaseUrl}/user_mailbox</code>
+      </div>
+
+      <div class="actions">
+        <Button type="button" on:click={copyApiServiceConfig} disabled={!apiSelectedDomain}>
+          {$t('worker.apiServiceCopyConfig')}
+        </Button>
+        <Button type="button" variant="secondary" on:click={copyApiServiceCurl}>
+          {$t('worker.apiServiceCopyCurl')}
+        </Button>
+      </div>
+    </div>
     {#if apiKeyLoading}
       <p class="feedback">{$t('worker.apiLoading')}</p>
     {:else}
@@ -1386,6 +1532,68 @@
     font-size: 0.85em;
   }
 
+  .api-service-panel {
+    margin-top: var(--space-4);
+    display: grid;
+    gap: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-primary-500), transparent 70%);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    background:
+      radial-gradient(circle at top right, color-mix(in srgb, var(--color-primary-500), transparent 84%), transparent 40%),
+      color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 35%);
+  }
+
+  .api-service-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .api-service-head h3 {
+    margin-bottom: 0.2rem;
+    font-size: 1rem;
+  }
+
+  .api-service-row {
+    display: grid;
+    grid-template-columns: minmax(0, 14rem) 1fr;
+    gap: var(--space-3);
+    align-items: end;
+  }
+
+  .api-service-hint {
+    padding-bottom: 0.82rem;
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+    font-weight: 650;
+  }
+
+  .api-service-grid {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .api-service-copy-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2);
+    align-items: end;
+  }
+
+  .api-service-copy-field-wide {
+    grid-column: 1 / -1;
+  }
+
+  .api-service-endpoints {
+    display: grid;
+    gap: 0.35rem;
+    border: 1px dashed color-mix(in srgb, var(--color-outline), transparent 35%);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+  }
+
   .api-key-status {
     margin-top: var(--space-4);
     display: grid;
@@ -1415,6 +1623,20 @@
 
     .actions {
       grid-template-columns: 1fr;
+    }
+
+    .api-service-head,
+    .api-service-row,
+    .api-service-copy-field {
+      grid-template-columns: 1fr;
+    }
+
+    .api-service-head {
+      display: grid;
+    }
+
+    .api-service-hint {
+      padding-bottom: 0;
     }
 
     .domain-actions {

@@ -263,6 +263,7 @@ Available endpoints:
 | Method | Path | Description |
 | --- | --- | --- |
 | `POST` | `/api/public/v1/create_user` | Create a mailbox user. |
+| `GET` | `/api/public/v1/domains` | List configured domains for service refresh/dropdowns. |
 | `GET` | `/api/public/v1/list_user` | List active mailbox users. |
 | `GET` | `/api/public/v1/user_mailbox` | Read a user's mailbox. |
 | `GET` | `/api/public/v1/read_email` | Read a rendered email body. |
@@ -281,6 +282,13 @@ Example list users:
 
 ```bash
 curl "https://mail.example.com/api/public/v1/list_user" \
+  -H "x-api-key: <api-key>"
+```
+
+Example refresh domains:
+
+```bash
+curl "https://mail.example.com/api/public/v1/domains" \
   -H "x-api-key: <api-key>"
 ```
 
