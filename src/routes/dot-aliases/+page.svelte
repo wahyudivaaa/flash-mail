@@ -4,7 +4,7 @@
   import Badge from '$lib/components/atoms/Badge.svelte';
   import Button from '$lib/components/atoms/Button.svelte';
   import Icon from '$lib/components/atoms/Icon.svelte';
-  import { getDotAliasInfo, MAX_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
+  import { getDotAliasInfo, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
   import { locale, t } from '$lib/i18n';
   import { errorToast, successToast, warningToast } from '$lib/sweet-alert';
   import type { DotAliasGenerationDto } from '$lib/types/dto';
@@ -31,9 +31,11 @@
 
   $: normalizedHistoryQuery = searchQuery.trim().toLowerCase();
   $: normalizedAliasQuery = aliasQuery.trim().toLowerCase();
-  $: emailPreview = getDotAliasInfo(emailInput);
+  $: emailPreview = getDotAliasInfo(emailInput, MAX_STANDALONE_DOT_ALIAS_VARIANTS + 1);
   $: emailPreviewAliasCount = emailPreview
-    ? emailPreview.aliases.filter((alias) => alias !== emailPreview.email).length
+    ? emailPreview.aliases
+        .filter((alias) => alias !== emailPreview.email)
+        .slice(0, MAX_STANDALONE_DOT_ALIAS_VARIANTS).length
     : 0;
   $: filteredGenerations = normalizedHistoryQuery
     ? generations.filter((generation) =>
@@ -158,7 +160,7 @@
               {$t('dot.preview', {
                 count: emailPreviewAliasCount,
                 total: emailPreview.totalLabel,
-                limit: MAX_DOT_ALIAS_VARIANTS
+                limit: MAX_STANDALONE_DOT_ALIAS_VARIANTS
               })}
             {:else}
               {$t('dot.inputHelp')}
@@ -215,7 +217,7 @@
             </div>
 
             {#if currentGeneration.truncated}
-              <p class="limit-note">{$t('dot.limited', { count: MAX_DOT_ALIAS_VARIANTS })}</p>
+              <p class="limit-note">{$t('dot.limited', { count: MAX_STANDALONE_DOT_ALIAS_VARIANTS })}</p>
             {/if}
 
             <div class="alias-list">

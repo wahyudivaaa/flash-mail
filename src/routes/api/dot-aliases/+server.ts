@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDotAliasInfo, getReceivableDotAliases } from '$lib/email-dot-aliases';
+import { getDotAliasInfo, MAX_DOT_ALIAS_VARIANTS, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
 import { ensureEmailRoutingRulesForUsers } from '$lib/server/cloudflare-email-routing';
 import {
   getDotAliasGenerationsFromDb,
@@ -33,8 +33,9 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
 
   const body = (await request.json().catch(() => null)) as { email?: string } | null;
   const email = body?.email?.trim().toLowerCase() ?? '';
-  const info = getDotAliasInfo(email);
-  const aliases = getReceivableDotAliases(email);
+  const info = getDotAliasInfo(email, MAX_STANDALONE_DOT_ALIAS_VARIANTS + 1);
+  const aliases =
+    info?.aliases.filter((alias) => alias !== info.email).slice(0, MAX_STANDALONE_DOT_ALIAS_VARIANTS) ?? [];
   if (!info || aliases.length === 0) {
     return json({ error: 'Email ini tidak punya variasi dot alias yang valid' }, { status: 400 });
   }
@@ -92,9 +93,10 @@ async function maybeActivateMailFlareAliases(
     };
   }
 
+  const receivableAliases = aliases.slice(0, MAX_DOT_ALIAS_VARIANTS);
   const stored = await storeUserEmailAliasesIfAvailableInDb(db, {
     userId: user.id,
-    aliases,
+    aliases: receivableAliases,
     provider: DOT_ALIAS_TOOL_PROVIDER
   });
 
@@ -110,7 +112,10 @@ async function maybeActivateMailFlareAliases(
   return {
     attempted: true,
     ok: routing.ok,
-    message: routing.message,
+    message:
+      aliases.length > receivableAliases.length
+        ? `${routing.message} Untuk keamanan, auto-routing Cloudflare diaktifkan untuk ${receivableAliases.length} alias pertama dari ${aliases.length} alias tersimpan.`
+        : routing.message,
     createdAliases: stored.createdAliases,
     existingAliases: stored.existingAliases,
     skippedAliases: stored.skippedAliases,

@@ -1,4 +1,5 @@
 export const MAX_DOT_ALIAS_VARIANTS = 48;
+export const MAX_STANDALONE_DOT_ALIAS_VARIANTS = 1000;
 
 export interface DotAliasInfo {
   email: string;
