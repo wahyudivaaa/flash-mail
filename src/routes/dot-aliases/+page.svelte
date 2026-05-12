@@ -455,9 +455,9 @@
 
   h2 {
     max-width: 42rem;
-    font-size: clamp(1.75rem, 3vw, 3rem);
-    line-height: 0.96;
-    letter-spacing: -0.06em;
+    font-size: clamp(1.35rem, 2.1vw, 2.2rem);
+    line-height: 1.06;
+    letter-spacing: -0.045em;
   }
 
   .hero-copy p,
