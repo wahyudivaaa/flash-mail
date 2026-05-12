@@ -1,6 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDotAliasInfo, MAX_DOT_ALIAS_VARIANTS, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
+import {
+  getStandaloneDotAliasInfo,
+  isGmailDotTrickDomain,
+  MAX_DOT_ALIAS_VARIANTS,
+  MAX_STANDALONE_DOT_ALIAS_VARIANTS
+} from '$lib/email-dot-aliases';
 import { ensureEmailRoutingRulesForUsers } from '$lib/server/cloudflare-email-routing';
 import {
   getDotAliasGenerationsFromDb,
@@ -8,7 +13,7 @@ import {
   storeDotAliasGenerationInDb,
   storeUserEmailAliasesIfAvailableInDb
 } from '$lib/server/db';
-import { GMAIL_MAIL_DOMAIN, isExternalMailDomain } from '$lib/server/external-mail-providers';
+import { isExternalMailDomain } from '$lib/server/external-mail-providers';
 
 const DOT_ALIAS_TOOL_PROVIDER = 'dot_alias_tool';
 
@@ -33,7 +38,7 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
 
   const body = (await request.json().catch(() => null)) as { email?: string } | null;
   const email = body?.email?.trim().toLowerCase() ?? '';
-  const info = getDotAliasInfo(email, MAX_STANDALONE_DOT_ALIAS_VARIANTS + 1);
+  const info = getStandaloneDotAliasInfo(email);
   const aliases =
     info?.aliases.filter((alias) => alias !== info.email).slice(0, MAX_STANDALONE_DOT_ALIAS_VARIANTS) ?? [];
   if (!info || aliases.length === 0) {
@@ -41,12 +46,12 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
   }
 
   const domain = info.email.split('@')[1]?.trim().toLowerCase() ?? '';
-  const provider = domain === GMAIL_MAIL_DOMAIN ? 'gmail' : isExternalMailDomain(domain) ? domain : 'mailflare';
+  const provider = isGmailDotTrickDomain(domain) ? 'gmail' : isExternalMailDomain(domain) ? domain : 'mailflare';
   const generation = await storeDotAliasGenerationInDb(db, {
     sourceEmail: info.email,
     provider,
     aliases,
-    totalLabel: info.totalLabel,
+    totalLabel: info.totalVariantsLabel,
     truncated: info.truncated,
     createdBy: locals.sessionEmail
   });
@@ -57,7 +62,8 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
     ok: true,
     generation,
     generations,
-    activation
+    activation,
+    capacity: info.capacity
   });
 };
 

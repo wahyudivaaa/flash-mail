@@ -4,7 +4,7 @@
   import Badge from '$lib/components/atoms/Badge.svelte';
   import Button from '$lib/components/atoms/Button.svelte';
   import Icon from '$lib/components/atoms/Icon.svelte';
-  import { getDotAliasInfo, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
+  import { getStandaloneDotAliasInfo, MAX_STANDALONE_DOT_ALIAS_VARIANTS } from '$lib/email-dot-aliases';
   import { locale, t } from '$lib/i18n';
   import { errorToast, successToast, warningToast } from '$lib/sweet-alert';
   import type { DotAliasGenerationDto } from '$lib/types/dto';
@@ -31,12 +31,9 @@
 
   $: normalizedHistoryQuery = searchQuery.trim().toLowerCase();
   $: normalizedAliasQuery = aliasQuery.trim().toLowerCase();
-  $: emailPreview = getDotAliasInfo(emailInput, MAX_STANDALONE_DOT_ALIAS_VARIANTS + 1);
-  $: emailPreviewAliasCount = emailPreview
-    ? emailPreview.aliases
-        .filter((alias) => alias !== emailPreview.email)
-        .slice(0, MAX_STANDALONE_DOT_ALIAS_VARIANTS).length
-    : 0;
+  $: emailPreview = getStandaloneDotAliasInfo(emailInput);
+  $: emailPreviewAliasCount = emailPreview?.storableAliasCount ?? 0;
+  $: currentGenerationInfo = currentGeneration ? getStandaloneDotAliasInfo(currentGeneration.sourceEmail) : null;
   $: filteredGenerations = normalizedHistoryQuery
     ? generations.filter((generation) =>
         [generation.sourceEmail, generation.provider, generation.createdBy]
@@ -75,6 +72,7 @@
             generation?: DotAliasGenerationDto;
             generations?: DotAliasGenerationDto[];
             activation?: ActivationPayload;
+            capacity?: unknown;
           }
         | null;
 
@@ -120,6 +118,23 @@
 
     return date.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID');
   }
+
+  function formatLargeCountLabel(value: string | number | undefined) {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return '0';
+    }
+
+    if (/^\d+$/.test(raw)) {
+      try {
+        return BigInt(raw).toLocaleString($locale === 'en' ? 'en-US' : 'id-ID');
+      } catch {
+        return raw;
+      }
+    }
+
+    return raw;
+  }
 </script>
 
 <div class="layout-shell">
@@ -158,14 +173,51 @@
           <p class="form-note">
             {#if emailPreview}
               {$t('dot.preview', {
-                count: emailPreviewAliasCount,
-                total: emailPreview.totalLabel,
+                count: formatLargeCountLabel(emailPreviewAliasCount),
+                total: formatLargeCountLabel(emailPreview.totalAdditionalAliasesLabel),
                 limit: MAX_STANDALONE_DOT_ALIAS_VARIANTS
               })}
             {:else}
               {$t('dot.inputHelp')}
             {/if}
           </p>
+          {#if emailPreview}
+            <div class="capacity-panel">
+              <div class="capacity-head">
+                <Icon name={emailPreview.isGmailDotTrickDomain ? 'verified' : 'dns'} size={18} />
+                <strong>{emailPreview.isGmailDotTrickDomain ? $t('dot.gmailDetected') : $t('dot.domainDetected')}</strong>
+              </div>
+              <div class="capacity-grid">
+                <div>
+                  <span>{$t('dot.usernameLength')}</span>
+                  <strong>{emailPreview.baseLocalPartLength}</strong>
+                </div>
+                <div>
+                  <span>{$t('dot.dotSlots')}</span>
+                  <strong>{emailPreview.dotSlotCount}</strong>
+                </div>
+                <div>
+                  <span>{$t('dot.totalVariations')}</span>
+                  <strong>{formatLargeCountLabel(emailPreview.totalVariantsLabel)}</strong>
+                </div>
+                <div>
+                  <span>{$t('dot.totalAliases')}</span>
+                  <strong>{formatLargeCountLabel(emailPreview.totalAdditionalAliasesLabel)}</strong>
+                </div>
+                <div>
+                  <span>{$t('dot.willSave')}</span>
+                  <strong>{formatLargeCountLabel(emailPreview.storableAliasCountLabel)}</strong>
+                </div>
+                <div>
+                  <span>{$t('dot.notSaved')}</span>
+                  <strong>{formatLargeCountLabel(emailPreview.omittedAdditionalAliasesLabel)}</strong>
+                </div>
+              </div>
+              <p class="capacity-note">
+                {emailPreview.isGmailDotTrickDomain ? $t('dot.gmailSmartNote') : $t('dot.domainSmartNote')}
+              </p>
+            </div>
+          {/if}
         </form>
       </section>
 
@@ -197,7 +249,11 @@
               </div>
               <div>
                 <span>{$t('dot.totalPossible')}</span>
-                <strong>{currentGeneration.totalLabel}</strong>
+                <strong>{formatLargeCountLabel(currentGeneration.totalLabel)}</strong>
+              </div>
+              <div>
+                <span>{$t('dot.totalAliases')}</span>
+                <strong>{formatLargeCountLabel(currentGenerationInfo?.totalAdditionalAliasesLabel)}</strong>
               </div>
               <div>
                 <span>{$t('dot.createdAt')}</span>
@@ -337,6 +393,7 @@
 
   .hero-copy p,
   .form-note,
+  .capacity-note,
   .limit-note,
   .activation-note p,
   .empty-panel span,
@@ -353,6 +410,53 @@
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--color-surface-card), transparent 14%);
     padding: var(--space-4);
+  }
+
+  .capacity-panel {
+    display: grid;
+    gap: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-primary-500), transparent 72%);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--color-primary-500), transparent 92%), transparent),
+      color-mix(in srgb, var(--color-surface-card), transparent 16%);
+    padding: var(--space-3);
+  }
+
+  .capacity-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--color-primary-500);
+    font-family: var(--font-family-headline);
+    font-weight: 900;
+  }
+
+  .capacity-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .capacity-grid div {
+    display: grid;
+    gap: 0.2rem;
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface-card), transparent 10%);
+    padding: 0.62rem 0.7rem;
+  }
+
+  .capacity-grid span {
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-size: 0.58rem;
+    font-weight: 900;
+  }
+
+  .capacity-grid strong {
+    color: var(--color-text);
+    overflow-wrap: anywhere;
   }
 
   .generator-form label {
@@ -450,7 +554,7 @@
 
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--space-3);
   }
 
@@ -637,6 +741,7 @@
 
     .input-row,
     .stats-grid,
+    .capacity-grid,
     .alias-toolbar {
       grid-template-columns: 1fr;
       display: grid;

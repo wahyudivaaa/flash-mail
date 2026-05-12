@@ -338,7 +338,7 @@ For Gmail and managed-domain accounts, the page also includes a dot-alias genera
 
 ## Dot Alias Generator
 
-The standalone `/dot-aliases` page accepts one source email, generates up to 1,000 safe dot-trick variations, stores the generated batch in D1, and shows a searchable history. If the source email already belongs to an active Mail Flare user on a managed Cloudflare domain, the backend also stores a safe first batch against that user and attempts to create Cloudflare Email Routing rules automatically.
+The standalone `/dot-aliases` page accepts one source email, analyzes the local-part length, calculates the theoretical dot-trick capacity, generates up to 1,000 safe variations, stores the generated batch in D1, and shows a searchable history. For Gmail addresses, the UI explains that dots route to the same Gmail inbox. If the source email already belongs to an active Mail Flare user on a managed Cloudflare domain, the backend also stores a safe first batch against that user and attempts to create Cloudflare Email Routing rules automatically.
 
 ## Outlook / Microsoft 365 Notes
 
