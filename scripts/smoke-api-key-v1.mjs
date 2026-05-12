@@ -270,6 +270,16 @@ function buildSeedSql({ apiKey }) {
   const apiKeyHash = sha256Hex(apiKey);
   return `
 DELETE FROM api_keys;
+DELETE FROM gmail_dot_alias_usages;
+DELETE FROM dot_alias_generation_items;
+DELETE FROM dot_alias_generations;
+DELETE FROM user_email_aliases;
+DELETE FROM gpt_plus_claims;
+DELETE FROM user_initial_credentials;
+DELETE FROM email_status_history;
+DELETE FROM access_sessions;
+DELETE FROM access_codes;
+DELETE FROM login_sessions;
 DELETE FROM emails;
 DELETE FROM users;
 INSERT INTO users (id, email, display_name, password_hash, created_at, updated_at)

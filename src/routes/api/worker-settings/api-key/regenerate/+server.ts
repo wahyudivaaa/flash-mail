@@ -1,9 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { regenerateApiKey } from '$lib/server/api-key';
+import { API_KEY_NAME_WORKER_SETTINGS, normalizeApiKeyName, regenerateApiKey } from '$lib/server/api-key';
 import { sendApiKeyIssuedTelegramNotification } from '$lib/server/telegram';
 
-export const POST: RequestHandler = async ({ locals, platform }) => {
+export const POST: RequestHandler = async ({ locals, platform, request }) => {
   if (!locals.authenticated) {
     return json({ error: 'Belum masuk' }, { status: 401 });
   }
@@ -12,17 +12,19 @@ export const POST: RequestHandler = async ({ locals, platform }) => {
   }
 
   try {
+    const body = (await request.json().catch(() => null)) as { name?: string } | null;
+    const name = normalizeApiKeyName(body?.name || API_KEY_NAME_WORKER_SETTINGS);
     const createdBy = `web:${locals.sessionEmail ?? 'owner'}`;
     const issued = await regenerateApiKey(platform?.env?.DB, {
       createdBy,
-      name: 'worker-settings'
+      name
     });
 
     await sendApiKeyIssuedTelegramNotification(platform?.env?.DB, platform?.env, {
       apiKey: issued.apiKey,
       action: 'regenerated',
       createdBy,
-      source: 'admin-web'
+      source: name
     }).catch(() => 0);
 
     return json({

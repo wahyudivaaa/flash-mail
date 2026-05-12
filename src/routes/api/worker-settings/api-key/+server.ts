@@ -1,8 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getActiveApiKeyStatus } from '$lib/server/api-key';
+import { API_KEY_NAME_WORKER_SETTINGS, getActiveApiKeyStatus, normalizeApiKeyName } from '$lib/server/api-key';
 
-export const GET: RequestHandler = async ({ locals, platform }) => {
+export const GET: RequestHandler = async ({ locals, platform, request }) => {
   if (!locals.authenticated) {
     return json({ error: 'Belum masuk' }, { status: 401 });
   }
@@ -11,7 +11,9 @@ export const GET: RequestHandler = async ({ locals, platform }) => {
   }
 
   try {
-    const status = await getActiveApiKeyStatus(platform?.env?.DB);
+    const url = new URL(request.url);
+    const name = normalizeApiKeyName(url.searchParams.get('name') || API_KEY_NAME_WORKER_SETTINGS);
+    const status = await getActiveApiKeyStatus(platform?.env?.DB, name);
     return json({
       ok: true,
       payload: status

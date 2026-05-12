@@ -1,6 +1,8 @@
 import { randomToken, sha256Hex } from '$lib/server/security';
 
 export const API_KEY_PREFIX = 'cmf_v1_';
+export const API_KEY_NAME_WORKER_SETTINGS = 'worker-settings';
+export const API_KEY_NAME_SERVICE_CONFIG = 'flash-mail-flare-service';
 const API_KEY_NAME_DEFAULT = 'default';
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 120;
@@ -85,22 +87,41 @@ export function extractApiKeyFromRequest(request: Request): string {
   return token?.trim() ?? '';
 }
 
-export async function getActiveApiKeyStatus(db: D1Database | undefined): Promise<ApiKeyStatus> {
+export function normalizeApiKeyName(value: string | null | undefined): string {
+  return (value?.trim() || API_KEY_NAME_DEFAULT).slice(0, 120);
+}
+
+export async function getActiveApiKeyStatus(db: D1Database | undefined, name?: string): Promise<ApiKeyStatus> {
   if (!db) {
     throw new Error('DB binding is required for api key operation');
   }
 
-  const row = await db
-    .prepare(
-      `
+  const normalizedName = name ? normalizeApiKeyName(name) : '';
+  const row = normalizedName
+    ? await db
+        .prepare(
+          `
+      SELECT id, name, created_by, created_at
+      FROM api_keys
+      WHERE revoked_at IS NULL
+        AND name = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `
+        )
+        .bind(normalizedName)
+        .first<Record<string, unknown>>()
+    : await db
+        .prepare(
+          `
       SELECT id, name, created_by, created_at
       FROM api_keys
       WHERE revoked_at IS NULL
       ORDER BY created_at DESC, id DESC
       LIMIT 1
     `
-    )
-    .first<Record<string, unknown>>();
+        )
+        .first<Record<string, unknown>>();
 
   const activeKey = toApiKeyRecord(row);
   return {
@@ -117,7 +138,8 @@ export async function generateApiKeyIfAbsent(
     throw new Error('DB binding is required for api key operation');
   }
 
-  const status = await getActiveApiKeyStatus(db);
+  const normalizedName = normalizeApiKeyName(input.name);
+  const status = await getActiveApiKeyStatus(db, normalizedName);
   if (status.activeKey) {
     return {
       ok: false,
@@ -128,7 +150,7 @@ export async function generateApiKeyIfAbsent(
 
   return {
     ok: true,
-    issued: await insertIssuedApiKey(db, input)
+    issued: await insertIssuedApiKey(db, { ...input, name: normalizedName })
   };
 }
 
@@ -140,8 +162,9 @@ export async function regenerateApiKey(
     throw new Error('DB binding is required for api key operation');
   }
 
-  await db.prepare('UPDATE api_keys SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL').run();
-  return insertIssuedApiKey(db, input);
+  const normalizedName = normalizeApiKeyName(input.name);
+  await db.prepare('UPDATE api_keys SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL AND name = ?').bind(normalizedName).run();
+  return insertIssuedApiKey(db, { ...input, name: normalizedName });
 }
 
 export async function authenticatePublicApiRequest(
@@ -220,7 +243,7 @@ async function insertIssuedApiKey(
   db: D1Database,
   input: { createdBy: string; name?: string }
 ): Promise<IssuedApiKey> {
-  const normalizedName = (input.name?.trim() || API_KEY_NAME_DEFAULT).slice(0, 120);
+  const normalizedName = normalizeApiKeyName(input.name);
   const createdBy = (input.createdBy?.trim() || 'system').slice(0, 190);
 
   for (let attempt = 0; attempt < 5; attempt += 1) {

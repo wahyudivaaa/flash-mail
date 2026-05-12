@@ -31,6 +31,8 @@
   }
 
   const PUBLIC_API_PATH = '/api/public/v1';
+  const WORKER_SETTINGS_KEY_NAME = 'worker-settings';
+  const API_SERVICE_KEY_NAME = 'flash-mail-flare-service';
   const API_SERVICE_OPTIONS = [
     { id: 'flash-mail-flare', label: 'Flash Mail Flare' },
     { id: 'shiromail-compatible', label: 'ShiroMail Compatible' }
@@ -61,6 +63,15 @@
   let apiKeyMessage = '';
   let apiKeyError = '';
   let apiKeyPlaintext = '';
+  let serviceApiKeyLoading = true;
+  let serviceApiKeyActionLoading = false;
+  let serviceApiKeyStatus: ApiKeyStatusPayload = {
+    hasActiveKey: false,
+    activeKey: null
+  };
+  let serviceApiKeyMessage = '';
+  let serviceApiKeyError = '';
+  let serviceApiKeyPlaintext = '';
   let apiServiceId = API_SERVICE_OPTIONS[0].id;
   let apiSelectedDomain = '';
   let apiServiceRefreshing = false;
@@ -88,7 +99,7 @@
     apiSelectedDomain = mailDomains.find((domain) => domain.isDefault)?.domain ?? mailDomains[0].domain;
   }
   $: selectedApiServiceLabel = API_SERVICE_OPTIONS.find((service) => service.id === apiServiceId)?.label ?? API_SERVICE_OPTIONS[0].label;
-  $: apiServiceKeyPreview = apiKeyPlaintext || (apiKeyStatus.hasActiveKey ? $t('worker.apiServiceKeyHidden') : $t('worker.apiServiceKeyMissing'));
+  $: apiServiceKeyPreview = serviceApiKeyPlaintext || (serviceApiKeyStatus.hasActiveKey ? $t('worker.apiServiceKeyHidden') : $t('worker.apiServiceKeyMissing'));
   $: outlookMailboxEmail =
     outlookMailboxLocalPart.trim() && outlookDomain
       ? `${outlookMailboxLocalPart.trim().toLowerCase().replace(/^@+/, '')}@${outlookDomain}`
@@ -140,7 +151,7 @@
       serviceLabel: selectedApiServiceLabel,
       urlApi: publicApiBaseUrl,
       domain: apiSelectedDomain,
-      apiKey: apiKeyPlaintext || '<paste-cmf_v1-api-key>',
+      apiKey: serviceApiKeyPlaintext || '<paste-cmf_v1-api-key>',
       authHeader: 'x-api-key',
       refreshDomainEndpoint: `${publicApiBaseUrl}/domains`,
       endpoints: {
@@ -158,7 +169,7 @@
   }
 
   async function copyApiServiceCurl(): Promise<void> {
-    const apiKey = apiKeyPlaintext || '<paste-cmf_v1-api-key>';
+    const apiKey = serviceApiKeyPlaintext || '<paste-cmf_v1-api-key>';
     const command = `curl "${publicApiBaseUrl}/domains" -H "x-api-key: ${apiKey}"`;
     await copyTextValue(command, $t('worker.apiServiceCurl'));
   }
@@ -170,8 +181,8 @@
 
     apiServiceRefreshing = true;
     try {
-      await Promise.all([loadApiKeyStatus(), loadMailDomains()]);
-      if (apiKeyError || domainError) {
+      await Promise.all([loadServiceApiKeyStatus(), loadMailDomains()]);
+      if (serviceApiKeyError || domainError) {
         return;
       }
       void successToast($t('worker.apiServiceRefreshDoneTitle'), $t('worker.apiServiceRefreshDone'));
@@ -183,6 +194,7 @@
   onMount(() => {
     publicApiBaseUrl = `${window.location.origin}${PUBLIC_API_PATH}`;
     void loadApiKeyStatus();
+    void loadServiceApiKeyStatus();
     void loadMailDomains();
   });
 
@@ -371,7 +383,7 @@
     apiKeyError = '';
 
     try {
-      const response = await fetch('/api/worker-settings/api-key', {
+      const response = await fetch(`/api/worker-settings/api-key?name=${encodeURIComponent(WORKER_SETTINGS_KEY_NAME)}`, {
         method: 'GET',
         headers: {
           'content-type': 'application/json'
@@ -398,6 +410,38 @@
     }
   }
 
+  async function loadServiceApiKeyStatus(): Promise<void> {
+    serviceApiKeyLoading = true;
+    serviceApiKeyError = '';
+
+    try {
+      const response = await fetch(`/api/worker-settings/api-key?name=${encodeURIComponent(API_SERVICE_KEY_NAME)}`, {
+        method: 'GET',
+        headers: {
+          'content-type': 'application/json'
+        }
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            error?: string;
+            payload?: ApiKeyStatusPayload;
+          }
+        | null;
+
+      if (!response.ok || !payload?.ok || !payload.payload) {
+        throw new Error(payload?.error ?? $t('worker.apiStatusError'));
+      }
+
+      serviceApiKeyStatus = payload.payload;
+    } catch (error) {
+      serviceApiKeyError = error instanceof Error ? error.message : $t('worker.apiStatusError');
+      void errorToast($t('worker.apiStatusError'), serviceApiKeyError);
+    } finally {
+      serviceApiKeyLoading = false;
+    }
+  }
+
   async function generateApiKey(regenerate: boolean): Promise<void> {
     if (apiKeyActionLoading) {
       return;
@@ -413,7 +457,8 @@
         method: 'POST',
         headers: {
           'content-type': 'application/json'
-        }
+        },
+        body: JSON.stringify({ name: WORKER_SETTINGS_KEY_NAME })
       });
 
       const payload = (await response.json().catch(() => null)) as
@@ -446,6 +491,58 @@
       await loadApiKeyStatus();
     } finally {
       apiKeyActionLoading = false;
+    }
+  }
+
+  async function generateServiceApiKey(regenerate: boolean): Promise<void> {
+    if (serviceApiKeyActionLoading) {
+      return;
+    }
+
+    serviceApiKeyActionLoading = true;
+    serviceApiKeyMessage = '';
+    serviceApiKeyError = '';
+    serviceApiKeyPlaintext = '';
+
+    try {
+      const response = await fetch(regenerate ? '/api/worker-settings/api-key/regenerate' : '/api/worker-settings/api-key/generate', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ name: API_SERVICE_KEY_NAME })
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            error?: string;
+            payload?: {
+              apiKey?: string;
+              activeKey?: ApiKeyRecordView;
+              hasActiveKey?: boolean;
+            };
+          }
+        | null;
+
+      if (!response.ok || !payload?.ok || !payload.payload?.apiKey || !payload.payload.activeKey) {
+        const errorMessage = payload?.error ?? (response.status === 409 ? $t('worker.apiExisting') : $t('worker.apiCreateError'));
+        throw new Error(errorMessage);
+      }
+
+      serviceApiKeyPlaintext = payload.payload.apiKey;
+      serviceApiKeyStatus = {
+        hasActiveKey: true,
+        activeKey: payload.payload.activeKey
+      };
+      serviceApiKeyMessage = regenerate ? $t('worker.apiServiceKeyRegenerated') : $t('worker.apiServiceKeyCreated');
+      void successToast(regenerate ? $t('worker.apiServiceKeyRegenerate') : $t('worker.apiServiceKeyCreate'), serviceApiKeyMessage);
+    } catch (error) {
+      serviceApiKeyError = error instanceof Error ? error.message : $t('worker.apiCreateError');
+      void errorToast($t('worker.apiCreateError'), serviceApiKeyError);
+      await loadServiceApiKeyStatus();
+    } finally {
+      serviceApiKeyActionLoading = false;
     }
   }
 
@@ -1104,8 +1201,8 @@
           <h3>{$t('worker.apiServiceHeading')}</h3>
           <p class="text-muted">{$t('worker.apiServiceDescription')}</p>
         </div>
-        <Badge tone={apiKeyStatus.hasActiveKey ? 'success' : 'warning'}>
-          {apiKeyStatus.hasActiveKey ? $t('worker.apiActive') : $t('worker.apiMissing')}
+        <Badge tone={serviceApiKeyStatus.hasActiveKey ? 'success' : 'warning'}>
+          {serviceApiKeyStatus.hasActiveKey ? $t('worker.apiServiceKeyActive') : $t('worker.apiMissing')}
         </Badge>
       </div>
 
@@ -1142,7 +1239,7 @@
               {/if}
             </select>
           </div>
-          <Button type="button" variant="secondary" on:click={refreshApiServiceConfig} disabled={apiServiceRefreshing || domainsLoading || apiKeyLoading}>
+          <Button type="button" variant="secondary" on:click={refreshApiServiceConfig} disabled={apiServiceRefreshing || domainsLoading || serviceApiKeyLoading}>
             {apiServiceRefreshing ? $t('common.refreshing') : $t('worker.apiServiceDomainRefresh')}
           </Button>
         </div>
@@ -1152,13 +1249,54 @@
           <Button
             type="button"
             variant="ghost"
-            on:click={() => apiKeyPlaintext && copyTextValue(apiKeyPlaintext, $t('worker.apiServiceApiKey'))}
-            disabled={!apiKeyPlaintext}
+            on:click={() => serviceApiKeyPlaintext && copyTextValue(serviceApiKeyPlaintext, $t('worker.apiServiceApiKey'))}
+            disabled={!serviceApiKeyPlaintext}
           >
             {$t('common.copy')}
           </Button>
         </div>
       </div>
+
+      {#if serviceApiKeyLoading}
+        <p class="feedback">{$t('worker.apiLoading')}</p>
+      {:else}
+        <div class="api-key-status compact">
+          {#if serviceApiKeyStatus.activeKey}
+            <p class="value"><strong>{$t('worker.apiKeyScope')}:</strong> {serviceApiKeyStatus.activeKey.name}</p>
+            <p class="value"><strong>{$t('worker.createdBy')}:</strong> {serviceApiKeyStatus.activeKey.createdBy || '-'}</p>
+            <p class="value"><strong>{$t('worker.createdAt')}:</strong> {serviceApiKeyStatus.activeKey.createdAt || '-'}</p>
+          {:else}
+            <p class="value">{$t('worker.apiServiceKeyMissingHelp')}</p>
+          {/if}
+        </div>
+        <div class="actions">
+          {#if serviceApiKeyStatus.hasActiveKey}
+            <Button type="button" on:click={() => generateServiceApiKey(true)} disabled={serviceApiKeyActionLoading}>
+              {serviceApiKeyActionLoading ? $t('worker.apiCreating') : $t('worker.apiServiceKeyRegenerate')}
+            </Button>
+          {:else}
+            <Button type="button" on:click={() => generateServiceApiKey(false)} disabled={serviceApiKeyActionLoading}>
+              {serviceApiKeyActionLoading ? $t('worker.apiCreating') : $t('worker.apiServiceKeyCreate')}
+            </Button>
+          {/if}
+          <Button type="button" variant="secondary" on:click={loadServiceApiKeyStatus} disabled={serviceApiKeyLoading || serviceApiKeyActionLoading}>
+            {$t('common.refresh')} {$t('common.status')}
+          </Button>
+        </div>
+        {#if serviceApiKeyPlaintext}
+          <div class="api-key-box">
+            <div class="label">{$t('worker.apiServiceKeyIssuedOnce')}</div>
+            <code>{serviceApiKeyPlaintext}</code>
+            <p class="feedback error">{$t('worker.apiSaveNow')}</p>
+          </div>
+        {/if}
+        {#if serviceApiKeyMessage}
+          <p class="feedback success">{serviceApiKeyMessage}</p>
+        {/if}
+        {#if serviceApiKeyError}
+          <p class="feedback error">{serviceApiKeyError}</p>
+        {/if}
+      {/if}
 
       <div class="api-service-endpoints">
         <div class="label">{$t('worker.apiServiceEndpointHelp')}</div>
@@ -1175,6 +1313,10 @@
           {$t('worker.apiServiceCopyCurl')}
         </Button>
       </div>
+    </div>
+    <div class="api-key-admin-section">
+      <h3>{$t('worker.apiAdminKeyHeading')}</h3>
+      <p class="text-muted">{$t('worker.apiAdminKeyDescription')}</p>
     </div>
     {#if apiKeyLoading}
       <p class="feedback">{$t('worker.apiLoading')}</p>
@@ -1598,6 +1740,25 @@
     margin-top: var(--space-4);
     display: grid;
     gap: var(--space-2);
+  }
+
+  .api-key-status.compact {
+    margin-top: 0;
+    border: 1px solid color-mix(in srgb, var(--color-outline), transparent 72%);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: color-mix(in srgb, var(--color-surface-card), transparent 10%);
+  }
+
+  .api-key-admin-section {
+    margin-top: var(--space-5);
+    border-top: 1px solid color-mix(in srgb, var(--color-outline), transparent 68%);
+    padding-top: var(--space-4);
+  }
+
+  .api-key-admin-section h3 {
+    margin-bottom: 0.2rem;
+    font-size: 1rem;
   }
 
   .api-key-box {

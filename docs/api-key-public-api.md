@@ -23,7 +23,7 @@ Batasan utama:
 
 Yang termasuk:
 
-- Single active API key global.
+- Single active API key per nama/scope.
 - Validasi API key untuk seluruh endpoint `/api/public/v1/*`.
 - Endpoint public:
   - `POST /api/public/v1/create_user`
@@ -55,7 +55,9 @@ Prinsip lifecycle:
 
 - Plaintext key tidak disimpan di DB, hanya hash SHA-256 (`key_hash`).
 - Plaintext key ditampilkan sekali saat generate/regenerate.
-- Regenerate akan revoke semua key aktif lama (`revoked_at` diisi) lalu membuat key baru.
+- Regenerate akan revoke key aktif lama pada nama/scope yang sama (`revoked_at` diisi) lalu membuat key baru.
+- Nama/scope bawaan admin web adalah `worker-settings`.
+- Nama/scope khusus panel **Layanan API** adalah `flash-mail-flare-service`.
 
 ## 4. Kontrak Autentikasi API Key
 
@@ -322,6 +324,10 @@ Semua endpoint ini wajib session owner.
 
 ### 7.1 `GET /api/worker-settings/api-key`
 
+Query opsional:
+
+- `name` untuk memuat status key pada scope tertentu. Default: `worker-settings`.
+
 Response sukses (`200`):
 
 ```json
@@ -341,6 +347,14 @@ Response sukses (`200`):
 
 ### 7.2 `POST /api/worker-settings/api-key/generate`
 
+Request body opsional:
+
+```json
+{
+  "name": "flash-mail-flare-service"
+}
+```
+
 Response sukses (`200`):
 
 ```json
@@ -358,7 +372,7 @@ Response sukses (`200`):
 }
 ```
 
-Jika key aktif sudah ada (`409`):
+Jika key aktif pada `name` yang sama sudah ada (`409`):
 
 ```json
 {
@@ -377,6 +391,8 @@ Jika key aktif sudah ada (`409`):
 ```
 
 ### 7.3 `POST /api/worker-settings/api-key/regenerate`
+
+Request body opsional sama seperti `generate`. Hanya key aktif pada `name` yang sama yang dibuat tidak berlaku.
 
 Response sukses (`200`) sama dengan generate, tetapi key lama otomatis invalid.
 
