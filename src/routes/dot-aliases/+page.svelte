@@ -29,6 +29,7 @@
   let aliasQuery = '';
   let generating = false;
   let deletingGenerationId = '';
+  let updatingAliasEmail = '';
 
   $: normalizedHistoryQuery = searchQuery.trim().toLowerCase();
   $: normalizedAliasQuery = aliasQuery.trim().toLowerCase();
@@ -129,10 +130,62 @@
   }
 
   function aliasUsageLabel(alias: DotAliasUsageDto) {
+    if (updatingAliasEmail === alias.email) {
+      return $t('dot.aliasSaving');
+    }
     if (!alias.used) {
       return $t('dot.aliasAvailable');
     }
     return alias.usedByEmail ? $t('dot.aliasUsedBy', { email: alias.usedByEmail }) : $t('dot.aliasUsed');
+  }
+
+  async function markAliasUsed(alias: DotAliasUsageDto) {
+    if (!currentGeneration || alias.used || updatingAliasEmail) {
+      return;
+    }
+
+    const generationId = currentGeneration.id;
+    updatingAliasEmail = alias.email;
+    try {
+      const response = await fetch('/api/dot-aliases', {
+        method: 'PATCH',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ id: generationId, alias: alias.email })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            generation?: DotAliasGenerationDto | null;
+            generations?: DotAliasGenerationDto[];
+            activation?: ActivationPayload;
+          }
+        | null;
+
+      if (!response.ok || !payload) {
+        void errorToast($t('dot.aliasMarkFailedTitle'), payload?.error ?? $t('dot.aliasMarkFailed'));
+        return;
+      }
+
+      generations = payload.generations ?? generations;
+      const nextGeneration = payload.generation ?? generations.find((item) => item.id === generationId) ?? null;
+      if (currentGeneration?.id === generationId) {
+        currentGeneration = nextGeneration;
+      }
+      activation = payload.activation ?? null;
+
+      if (payload.activation && !payload.activation.ok) {
+        void warningToast($t('dot.aliasMarkWarningTitle'), payload.activation.message);
+      } else {
+        void successToast($t('dot.aliasMarkSuccessTitle'), $t('dot.aliasMarkSuccess', { email: alias.email }));
+      }
+    } catch {
+      void errorToast($t('dot.aliasMarkFailedTitle'), $t('dot.aliasMarkFailed'));
+    } finally {
+      updatingAliasEmail = '';
+    }
   }
 
   async function deleteGeneration(generation: DotAliasGenerationDto) {
@@ -381,8 +434,20 @@
                 {#each visibleAliasUsages as alias (alias.email)}
                   <div class="alias-row" class:used={alias.used}>
                     <label class="alias-status" title={aliasUsageLabel(alias)}>
-                      <input type="checkbox" checked={alias.used} disabled aria-label={aliasUsageLabel(alias)} />
-                      <span>{alias.used ? $t('dot.aliasUsed') : $t('dot.aliasAvailable')}</span>
+                      <input
+                        type="checkbox"
+                        checked={alias.used || updatingAliasEmail === alias.email}
+                        disabled={alias.used || Boolean(updatingAliasEmail)}
+                        aria-label={alias.used ? aliasUsageLabel(alias) : $t('dot.aliasMarkUsedAria', { email: alias.email })}
+                        on:change={() => markAliasUsed(alias)}
+                      />
+                      <span>
+                        {#if updatingAliasEmail === alias.email}
+                          {$t('dot.aliasSaving')}
+                        {:else}
+                          {alias.used ? $t('dot.aliasUsed') : $t('dot.aliasAvailable')}
+                        {/if}
+                      </span>
                     </label>
                     <div class="alias-main">
                       <code>{alias.email}</code>

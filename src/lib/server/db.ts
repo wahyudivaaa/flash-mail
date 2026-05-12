@@ -787,6 +787,19 @@ interface StoreEmailAliasBatchResult {
   skippedAliases: string[];
 }
 
+export interface ActivateDotAliasGenerationItemResult extends StoreEmailAliasBatchResult {
+  activated: boolean;
+  reason?:
+    | 'missing_table'
+    | 'not_found'
+    | 'alias_not_found'
+    | 'source_user_not_found'
+    | 'source_user_disabled'
+    | 'alias_taken';
+  sourceEmail: string;
+  aliasEmail: string;
+}
+
 interface DetectGptPlusClaimInput {
   userId: string;
   emailId: string;
@@ -1145,6 +1158,100 @@ export async function deleteDotAliasGenerationInDb(
       isMissingOptionalTableError(error, 'dot_alias_generation_items')
     ) {
       return { deleted: false, reason: 'missing_table' };
+    }
+    throw error;
+  }
+}
+
+export async function activateDotAliasGenerationItemInDb(
+  db: D1Database | undefined,
+  input: {
+    generationId: string;
+    aliasEmail: string;
+    provider?: string;
+  }
+): Promise<ActivateDotAliasGenerationItemResult> {
+  const generationId = input.generationId.trim();
+  const aliasEmail = input.aliasEmail.trim().toLowerCase();
+  const provider = (input.provider?.trim() || 'dot_alias_tool').slice(0, 80);
+  const emptyResult: ActivateDotAliasGenerationItemResult = {
+    activated: false,
+    sourceEmail: '',
+    aliasEmail,
+    savedAliases: [],
+    createdAliases: [],
+    existingAliases: [],
+    skippedAliases: []
+  };
+
+  if (!db || !generationId || !aliasEmail) {
+    return { ...emptyResult, reason: 'not_found' };
+  }
+
+  try {
+    const generation = await db
+      .prepare(
+        `
+        SELECT
+          g.source_email AS source_email,
+          i.alias_email AS alias_email
+        FROM dot_alias_generations g
+        LEFT JOIN dot_alias_generation_items i
+          ON i.generation_id = g.id
+          AND lower(i.alias_email) = ?
+        WHERE g.id = ?
+        LIMIT 1
+      `
+      )
+      .bind(aliasEmail, generationId)
+      .first<{ source_email: string; alias_email: string | null }>();
+
+    const sourceEmail = String(generation?.source_email ?? '').trim().toLowerCase();
+    const matchedAlias = String(generation?.alias_email ?? '').trim().toLowerCase();
+    if (!sourceEmail) {
+      return { ...emptyResult, reason: 'not_found' };
+    }
+    if (!matchedAlias) {
+      return { ...emptyResult, sourceEmail, reason: 'alias_not_found' };
+    }
+
+    const sourceUser = await getUserAuthByEmail(db, sourceEmail);
+    if (!sourceUser?.id) {
+      return { ...emptyResult, sourceEmail, reason: 'source_user_not_found' };
+    }
+    if (!sourceUser.passwordHash) {
+      return { ...emptyResult, sourceEmail, reason: 'source_user_disabled' };
+    }
+
+    const stored = await storeUserEmailAliasesIfAvailableInDb(db, {
+      userId: sourceUser.id,
+      aliases: [matchedAlias],
+      provider
+    });
+
+    if (stored.savedAliases.length === 0) {
+      return {
+        ...emptyResult,
+        ...stored,
+        sourceEmail,
+        aliasEmail: matchedAlias,
+        reason: 'alias_taken'
+      };
+    }
+
+    return {
+      ...stored,
+      activated: true,
+      sourceEmail,
+      aliasEmail: matchedAlias
+    };
+  } catch (error) {
+    if (
+      isMissingOptionalTableError(error, 'dot_alias_generations') ||
+      isMissingOptionalTableError(error, 'dot_alias_generation_items') ||
+      isMissingOptionalTableError(error, 'user_email_aliases')
+    ) {
+      return { ...emptyResult, reason: 'missing_table' };
     }
     throw error;
   }
