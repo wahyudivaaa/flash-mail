@@ -120,6 +120,21 @@ CREATE TABLE IF NOT EXISTS gpt_plus_claims (
 );
 
 -- ── Worker Metrics ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS kiro_github_claims (
+  user_id TEXT PRIMARY KEY,
+  email_id TEXT NOT NULL UNIQUE,
+  authorized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  detected_subject TEXT NOT NULL DEFAULT '',
+  detected_sender TEXT NOT NULL DEFAULT '',
+  recipient TEXT NOT NULL DEFAULT '',
+  github_username TEXT NOT NULL DEFAULT '',
+  application_name TEXT NOT NULL DEFAULT 'Kiro',
+  connection_url TEXT NOT NULL DEFAULT '',
+  security_log_url TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (email_id) REFERENCES emails(id)
+);
+
 CREATE TABLE IF NOT EXISTS worker_metrics (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0,
@@ -200,6 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_access_sessions_expires ON access_sessions(expire
 CREATE INDEX IF NOT EXISTS idx_login_sessions_expires ON login_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_sessions_user ON login_sessions(user_id, expires_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gpt_plus_claims_claimed_at ON gpt_plus_claims(claimed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kiro_github_claims_authorized_at ON kiro_github_claims(authorized_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_initial_credentials_email ON user_initial_credentials(email);
 
 CREATE TABLE IF NOT EXISTS user_email_aliases (

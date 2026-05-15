@@ -138,6 +138,8 @@ pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0001_gp
 pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0002_gpt_plus_deactivation.sql
 pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0003_user_email_aliases.sql
 pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0004_dot_alias_generations.sql
+pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0005_kiro_github_claims.sql
+pnpm exec wrangler d1 execute flash-mail-db --remote --file ./migrations/0006_backfill_kiro_github_claims.sql
 ```
 
 ### 4. Configure `wrangler.toml`

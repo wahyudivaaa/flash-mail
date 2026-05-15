@@ -137,6 +137,23 @@ export interface GptPlusClaimDto {
   dotAliasCount: number;
 }
 
+export interface KiroGithubClaimDto {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: string;
+  initialPassword: string;
+  authorizedAt: string;
+  emailId: string;
+  detectedSubject: string;
+  detectedSender: string;
+  recipient: string;
+  githubUsername: string;
+  applicationName: string;
+  connectionUrl: string;
+  securityLogUrl: string;
+}
+
 export interface DotAliasUsageDto {
   email: string;
   used: boolean;

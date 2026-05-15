@@ -275,6 +275,7 @@ DELETE FROM dot_alias_generation_items;
 DELETE FROM dot_alias_generations;
 DELETE FROM user_email_aliases;
 DELETE FROM gpt_plus_claims;
+DELETE FROM kiro_github_claims;
 DELETE FROM user_initial_credentials;
 DELETE FROM email_status_history;
 DELETE FROM access_sessions;

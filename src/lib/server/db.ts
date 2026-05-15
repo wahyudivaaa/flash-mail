@@ -5,13 +5,16 @@ import type {
   EmailDetailDto,
   EmailDto,
   GptPlusClaimDto,
+  KiroGithubClaimDto,
   UserDto
 } from '$lib/types/dto';
 import type { WorkerSettingsPageDto } from '$lib/server/services/worker-settings.service';
 import PostalMime from 'postal-mime';
 
 const GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS = 60_000;
+const KIRO_GITHUB_BACKFILL_INTERVAL_MS = 60_000;
 let lastGptPlusDeactivationBackfillAt = 0;
+let lastKiroGithubBackfillAt = 0;
 
 interface CreateUserInput {
   email: string;
@@ -716,6 +719,20 @@ export async function upsertInboundEmailInDb(
     .run();
 
   await detectAndStoreGptPlusClaim(db, {
+    userId,
+    emailId,
+    sender,
+    recipient,
+    subject,
+    snippet,
+    bodyText,
+    bodyHtml: parsedHtml,
+    parsedSubject: subject,
+    parsedSender: fromMailbox.email || sender,
+    receivedAt
+  });
+
+  await detectAndStoreKiroGithubClaim(db, {
     userId,
     emailId,
     sender,
@@ -1735,6 +1752,64 @@ async function detectAndStoreGptPlusClaim(db: D1Database, input: DetectGptPlusCl
   }
 }
 
+async function detectAndStoreKiroGithubClaim(db: D1Database, input: DetectGptPlusClaimInput): Promise<void> {
+  const subject = (input.parsedSubject || input.subject || '').trim();
+  const sender = (input.parsedSender || input.sender || '').trim();
+  const recipient = input.recipient.trim().toLowerCase();
+  const rawText = buildKiroGithubRawText(input);
+  const searchText = normalizeSearchText(rawText);
+  if (!isKiroGithubAuthorizationEmail(subject, sender, searchText)) {
+    return;
+  }
+
+  try {
+    await db
+      .prepare(
+        `
+      INSERT INTO kiro_github_claims (
+        user_id,
+        email_id,
+        authorized_at,
+        detected_subject,
+        detected_sender,
+        recipient,
+        github_username,
+        application_name,
+        connection_url,
+        security_log_url
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Kiro', ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        email_id = excluded.email_id,
+        authorized_at = excluded.authorized_at,
+        detected_subject = excluded.detected_subject,
+        detected_sender = excluded.detected_sender,
+        recipient = excluded.recipient,
+        github_username = excluded.github_username,
+        application_name = excluded.application_name,
+        connection_url = excluded.connection_url,
+        security_log_url = excluded.security_log_url
+    `
+      )
+      .bind(
+        input.userId,
+        input.emailId,
+        input.receivedAt || new Date().toISOString(),
+        subject.slice(0, 998),
+        sender.slice(0, 320),
+        recipient.slice(0, 320),
+        extractKiroGithubUsername(rawText).slice(0, 80),
+        extractFirstGithubUrl(rawText, '/settings/connections/applications/').slice(0, 500),
+        extractFirstGithubUrl(rawText, '/settings/security-log').slice(0, 500)
+      )
+      .run();
+  } catch (error) {
+    if (!isMissingOptionalTableError(error, 'kiro_github_claims')) {
+      throw error;
+    }
+  }
+}
+
 async function backfillRecentGptPlusDeactivationsFromDb(db: D1Database): Promise<void> {
   const now = Date.now();
   if (now - lastGptPlusDeactivationBackfillAt < GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS) {
@@ -1801,6 +1876,73 @@ async function backfillRecentGptPlusDeactivationsFromDb(db: D1Database): Promise
     }
   } catch {
     // This is opportunistic. A failed backfill should never block inbox/user pages.
+  }
+}
+
+async function backfillRecentKiroGithubClaimsFromDb(db: D1Database): Promise<void> {
+  const now = Date.now();
+  if (now - lastKiroGithubBackfillAt < KIRO_GITHUB_BACKFILL_INTERVAL_MS) {
+    return;
+  }
+  lastKiroGithubBackfillAt = now;
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      SELECT
+        id,
+        user_id,
+        sender,
+        recipient,
+        COALESCE(subject, parsed_subject, '') AS subject,
+        COALESCE(snippet, '') AS snippet,
+        COALESCE(parsed_text, body_text, '') AS body_text,
+        COALESCE(parsed_html, body_html, '') AS body_html,
+        received_at
+      FROM emails
+      WHERE deleted_at IS NULL
+        AND (
+          lower(sender) LIKE '%github%'
+          OR lower(COALESCE(parsed_from_email, '')) LIKE '%github%'
+          OR lower(COALESCE(body_text, '')) LIKE '%github%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%github%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%github%'
+        )
+        AND (
+          lower(COALESCE(body_text, '')) LIKE '%third-party oauth application%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%third-party oauth application%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%third-party oauth application%'
+        )
+        AND (
+          lower(COALESCE(body_text, '')) LIKE '%kiro%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%kiro%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%kiro%'
+        )
+      ORDER BY received_at DESC
+      LIMIT 100
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    for (const row of response.results ?? []) {
+      const input = {
+        userId: String(row.user_id ?? ''),
+        emailId: String(row.id ?? ''),
+        sender: String(row.sender ?? ''),
+        recipient: String(row.recipient ?? ''),
+        subject: String(row.subject ?? ''),
+        snippet: String(row.snippet ?? ''),
+        bodyText: String(row.body_text ?? ''),
+        bodyHtml: String(row.body_html ?? ''),
+        receivedAt: String(row.received_at ?? '')
+      };
+      if (input.userId && input.emailId) {
+        await detectAndStoreKiroGithubClaim(db, input);
+      }
+    }
+  } catch {
+    // This is opportunistic. A failed backfill should never block the page.
   }
 }
 
@@ -1975,6 +2117,25 @@ function isGptPlusDeactivationEmail(subject: string, sender: string, searchText:
   return openAiRelated && looksLikePolicyDeactivation && identifiesAccount;
 }
 
+function isKiroGithubAuthorizationEmail(subject: string, sender: string, searchText: string): boolean {
+  const normalizedSubject = subject.toLowerCase();
+  const normalizedSender = sender.toLowerCase();
+  const githubRelated =
+    normalizedSender.includes('github') ||
+    normalizedSubject.includes('github') ||
+    searchText.includes('the github team') ||
+    searchText.includes('github.com/settings');
+  const kiroOauthRelated =
+    searchText.includes('third-party oauth application (kiro)') ||
+    (searchText.includes('third-party oauth application') && searchText.includes('kiro')) ||
+    (searchText.includes('oauth') && searchText.includes('kiro') && searchText.includes('recently authorized'));
+  const looksAuthorized =
+    searchText.includes('recently authorized to access your account') ||
+    (searchText.includes('authorized') && searchText.includes('read:user') && searchText.includes('user:email'));
+
+  return githubRelated && kiroOauthRelated && looksAuthorized;
+}
+
 function buildGptSignalSearchText(input: DetectGptPlusClaimInput): string {
   return normalizeSearchText(
     [
@@ -1986,6 +2147,17 @@ function buildGptSignalSearchText(input: DetectGptPlusClaimInput): string {
       input.bodyHtml ? htmlToPlainText(input.bodyHtml) : ''
     ].join('\n')
   );
+}
+
+function buildKiroGithubRawText(input: DetectGptPlusClaimInput): string {
+  return [
+    input.parsedSubject || input.subject,
+    input.parsedSender || input.sender,
+    input.recipient,
+    input.snippet,
+    input.bodyText,
+    input.bodyHtml ? htmlToPlainText(input.bodyHtml) : ''
+  ].join('\n');
 }
 
 function normalizeSearchText(value: string): string {
@@ -2005,6 +2177,17 @@ function extractAssociatedOpenAiAccountEmail(searchText: string): string {
   }
 
   return '';
+}
+
+function extractKiroGithubUsername(rawText: string): string {
+  const match = rawText.match(/\bHey\s+([a-z0-9](?:[a-z0-9-]{0,38}))\s*!/i);
+  return match?.[1]?.toLowerCase() ?? '';
+}
+
+function extractFirstGithubUrl(rawText: string, pathPart: string): string {
+  const escapedPath = pathPart.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = rawText.match(new RegExp(`https://github\\.com${escapedPath}[^\\s<>"']*`, 'i'));
+  return match?.[0] ?? '';
 }
 
 export async function getGptPlusClaimsFromDb(db: D1Database | undefined): Promise<GptPlusClaimDto[]> {
@@ -2138,6 +2321,81 @@ function mapGptPlusClaimRow(row: Record<string, unknown>): GptPlusClaimDto {
     deactivationSubject: String(row.deactivated_subject ?? ''),
     deactivationSender: String(row.deactivated_sender ?? ''),
     dotAliasCount: Number(row.dot_alias_count ?? 0)
+  };
+}
+
+export async function getKiroGithubClaimsFromDb(db: D1Database | undefined): Promise<KiroGithubClaimDto[]> {
+  if (!db) {
+    return [];
+  }
+
+  await backfillRecentKiroGithubClaimsFromDb(db);
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      WITH owner AS (
+        SELECT id AS owner_id
+        FROM users
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      )
+      SELECT
+        u.id AS user_id,
+        u.email,
+        COALESCE(u.display_name, u.email) AS display_name,
+        CASE
+          WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner'
+          ELSE 'member'
+        END AS role,
+        COALESCE(c.initial_password, '') AS initial_password,
+        k.authorized_at,
+        k.email_id,
+        k.detected_subject,
+        k.detected_sender,
+        k.recipient,
+        k.github_username,
+        k.application_name,
+        k.connection_url,
+        k.security_log_url
+      FROM kiro_github_claims k
+      INNER JOIN users u
+        ON u.id = k.user_id
+      LEFT JOIN user_initial_credentials c
+        ON c.user_id = u.id
+      WHERE u.password_hash IS NOT NULL
+      ORDER BY k.authorized_at DESC, u.created_at DESC
+      LIMIT 250
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    return (response.results ?? []).map((row) => mapKiroGithubClaimRow(row));
+  } catch (error) {
+    if (isMissingOptionalTableError(error, 'kiro_github_claims') || isMissingOptionalTableError(error, 'user_initial_credentials')) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function mapKiroGithubClaimRow(row: Record<string, unknown>): KiroGithubClaimDto {
+  return {
+    userId: String(row.user_id ?? ''),
+    email: String(row.email ?? ''),
+    displayName: String(row.display_name ?? ''),
+    role: String(row.role ?? 'member'),
+    initialPassword: String(row.initial_password ?? ''),
+    authorizedAt: String(row.authorized_at ?? ''),
+    emailId: String(row.email_id ?? ''),
+    detectedSubject: String(row.detected_subject ?? ''),
+    detectedSender: String(row.detected_sender ?? ''),
+    recipient: String(row.recipient ?? ''),
+    githubUsername: String(row.github_username ?? ''),
+    applicationName: String(row.application_name ?? 'Kiro'),
+    connectionUrl: String(row.connection_url ?? ''),
+    securityLogUrl: String(row.security_log_url ?? '')
   };
 }
 
