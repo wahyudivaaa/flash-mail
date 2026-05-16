@@ -2365,13 +2365,15 @@ export async function getKiroGithubClaimsFromDb(db: D1Database | undefined): Pro
       LEFT JOIN user_initial_credentials c
         ON c.user_id = u.id
       WHERE u.password_hash IS NOT NULL
-      ORDER BY k.authorized_at DESC, u.created_at DESC
-      LIMIT 250
+      LIMIT 1000
     `
       )
       .all<Record<string, unknown>>();
 
-    return (response.results ?? []).map((row) => mapKiroGithubClaimRow(row));
+    return (response.results ?? [])
+      .map((row) => mapKiroGithubClaimRow(row))
+      .sort(sortKiroGithubClaimsByDateDesc)
+      .slice(0, 250);
   } catch (error) {
     if (isMissingOptionalTableError(error, 'kiro_github_claims') || isMissingOptionalTableError(error, 'user_initial_credentials')) {
       return [];
@@ -2397,6 +2399,18 @@ function mapKiroGithubClaimRow(row: Record<string, unknown>): KiroGithubClaimDto
     connectionUrl: String(row.connection_url ?? ''),
     securityLogUrl: String(row.security_log_url ?? '')
   };
+}
+
+function sortKiroGithubClaimsByDateDesc(a: KiroGithubClaimDto, b: KiroGithubClaimDto): number {
+  const dateDiff = getStoredDateTime(b.authorizedAt) - getStoredDateTime(a.authorizedAt);
+  if (dateDiff !== 0) {
+    return dateDiff;
+  }
+  return a.email.localeCompare(b.email);
+}
+
+function getStoredDateTime(value: string): number {
+  return parseStoredDate(value)?.getTime() ?? 0;
 }
 
 function isMissingOptionalTableError(error: unknown, tableName: string): boolean {

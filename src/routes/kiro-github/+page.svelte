@@ -14,7 +14,7 @@
 
   const AUTO_REFRESH_INTERVAL_MS = 5000;
 
-  let claims: KiroGithubClaimDto[] = data.claims;
+  let claims: KiroGithubClaimDto[] = sortClaimsByDate(data.claims);
   let searchQuery = '';
   let autoRefreshing = false;
   let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -54,7 +54,7 @@
 
       const payload = (await response.json().catch(() => null)) as { claims?: KiroGithubClaimDto[] } | null;
       if (payload?.claims) {
-        claims = payload.claims;
+        claims = sortClaimsByDate(payload.claims);
       }
     } finally {
       autoRefreshing = false;
@@ -76,6 +76,15 @@
       return '-';
     }
     return date.toLocaleString($locale === 'en' ? 'en-US' : 'id-ID');
+  }
+
+  function sortClaimsByDate(items: KiroGithubClaimDto[]) {
+    return [...items].sort((a, b) => getDateTime(b.authorizedAt) - getDateTime(a.authorizedAt) || a.email.localeCompare(b.email));
+  }
+
+  function getDateTime(value: string) {
+    const time = new Date(value).getTime();
+    return Number.isNaN(time) ? 0 : time;
   }
 
   onMount(() => {
