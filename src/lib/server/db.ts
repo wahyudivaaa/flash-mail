@@ -2843,11 +2843,14 @@ export async function getUserInboxFromDb(db: D1Database | undefined, userId: str
     FROM emails
     WHERE user_id = ?
       AND deleted_at IS NULL
-    ORDER BY is_archived ASC, received_at DESC
-    LIMIT 100
+    LIMIT 1000
   `;
   const { results } = await db.prepare(query).bind(userId).all<Record<string, unknown>>();
-  return (results ?? []).map((row) => ({
+  return (results ?? []).map((row) => mapEmailSummaryRow(row)).sort(sortInboxEmailsByDateDesc).slice(0, 100);
+}
+
+function mapEmailSummaryRow(row: Record<string, unknown>): EmailDto {
+  return {
     id: String(row.id),
     sender: String(row.sender ?? ''),
     subject: String(row.subject ?? '(Tanpa Subjek)'),
@@ -2856,7 +2859,19 @@ export async function getUserInboxFromDb(db: D1Database | undefined, userId: str
     isRead: Number(row.is_read ?? 0) === 1,
     isStarred: Number(row.is_starred ?? 0) === 1,
     isArchived: Number(row.is_archived ?? 0) === 1
-  }));
+  };
+}
+
+function sortInboxEmailsByDateDesc(a: EmailDto, b: EmailDto): number {
+  const archiveDiff = Number(a.isArchived) - Number(b.isArchived);
+  if (archiveDiff !== 0) {
+    return archiveDiff;
+  }
+  const dateDiff = getStoredDateTime(b.receivedAt) - getStoredDateTime(a.receivedAt);
+  if (dateDiff !== 0) {
+    return dateDiff;
+  }
+  return b.id.localeCompare(a.id);
 }
 
 export async function getEmailByIdFromDb(

@@ -12,19 +12,20 @@
   export let mailboxOnly = false;
 
   $: rowHrefPrefix = emailHrefPrefix || `/users/${userId}/emails`;
-  $: primaryCount = emails.filter((email) => !email.isArchived).length;
-  $: starredCount = emails.filter((email) => email.isStarred && !email.isArchived).length;
-  $: archivedCount = emails.filter((email) => email.isArchived).length;
+  $: sortedEmails = sortEmailsByDate(emails);
+  $: primaryCount = sortedEmails.filter((email) => !email.isArchived).length;
+  $: starredCount = sortedEmails.filter((email) => email.isStarred && !email.isArchived).length;
+  $: archivedCount = sortedEmails.filter((email) => email.isArchived).length;
 
   type InboxTab = 'primary' | 'starred' | 'archived';
   let activeTab: InboxTab = 'primary';
 
   $: visibleEmails =
     activeTab === 'starred'
-      ? emails.filter((email) => email.isStarred && !email.isArchived)
+      ? sortedEmails.filter((email) => email.isStarred && !email.isArchived)
       : activeTab === 'archived'
-        ? emails.filter((email) => email.isArchived)
-        : emails.filter((email) => !email.isArchived);
+        ? sortedEmails.filter((email) => email.isArchived)
+        : sortedEmails.filter((email) => !email.isArchived);
 
   function initials(sender: string): string {
     const plain = sender.replace(/["<>]/g, ' ').trim();
@@ -49,6 +50,15 @@
     }
 
     return date.toLocaleDateString($locale === 'en' ? 'en-US' : 'id-ID', { day: '2-digit', month: 'short' });
+  }
+
+  function sortEmailsByDate(items: EmailDto[]) {
+    return [...items].sort((a, b) => getDateTime(b.receivedAt) - getDateTime(a.receivedAt) || b.id.localeCompare(a.id));
+  }
+
+  function getDateTime(value: string) {
+    const time = new Date(value).getTime();
+    return Number.isNaN(time) ? 0 : time;
   }
 </script>
 

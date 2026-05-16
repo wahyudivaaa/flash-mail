@@ -84,24 +84,25 @@ export const GET: RequestHandler = async ({ platform, request }) => {
           WHERE user_id = ?
             AND deleted_at IS NULL
             ${archiveCondition}
-          ORDER BY received_at DESC, id DESC
-          LIMIT ? OFFSET ?
         `
         )
-        .bind(user.id, limit.value, offset.value)
+        .bind(user.id)
         .all<Record<string, unknown>>()
     ]);
 
-    const emails = (listRows.results ?? []).map((row) => ({
-      id: String(row.id ?? ''),
-      sender: String(row.sender ?? ''),
-      subject: String(row.subject ?? '(Tanpa Subjek)'),
-      snippet: String(row.snippet ?? ''),
-      receivedAt: String(row.received_at ?? ''),
-      isRead: Number(row.is_read ?? 0) === 1,
-      isStarred: Number(row.is_starred ?? 0) === 1,
-      isArchived: Number(row.is_archived ?? 0) === 1
-    }));
+    const emails = (listRows.results ?? [])
+      .map((row) => ({
+        id: String(row.id ?? ''),
+        sender: String(row.sender ?? ''),
+        subject: String(row.subject ?? '(Tanpa Subjek)'),
+        snippet: String(row.snippet ?? ''),
+        receivedAt: String(row.received_at ?? ''),
+        isRead: Number(row.is_read ?? 0) === 1,
+        isStarred: Number(row.is_starred ?? 0) === 1,
+        isArchived: Number(row.is_archived ?? 0) === 1
+      }))
+      .sort((a, b) => getDateTime(b.receivedAt) - getDateTime(a.receivedAt) || b.id.localeCompare(a.id))
+      .slice(offset.value, offset.value + limit.value);
 
     return json({
       ok: true,
@@ -138,6 +139,11 @@ function publicError(status: number, code: PublicErrorCode, message: string) {
     },
     { status }
   );
+}
+
+function getDateTime(value: string) {
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function validateUsername(usernameRaw: string): string | null {
