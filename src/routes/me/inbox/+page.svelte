@@ -9,32 +9,53 @@
   export let data: PageData;
 
   const AUTO_REFRESH_INTERVAL_MS = 5000;
+  const SEARCH_DEBOUNCE_MS = 350;
 
   let searchQuery = '';
   let emails: EmailDto[] = data.emails;
   let archivedCount = data.archivedCount ?? 0;
   let autoRefreshing = false;
+  let hasMounted = false;
+  let lastSearchQuery = '';
+  let inboxRequestId = 0;
   let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   $: normalizedQuery = searchQuery.trim().toLowerCase();
-  $: filteredEmails = normalizedQuery
-    ? emails.filter((email) =>
-        [email.sender, email.subject, email.snippet].some((field) => field.toLowerCase().includes(normalizedQuery))
-      )
-    : emails;
+  $: filteredEmails = emails;
   $: unreadCount = emails.filter((email) => !email.isRead && !email.isArchived).length;
   $: starredCount = emails.filter((email) => email.isStarred && !email.isArchived).length;
   $: inboxCount = Math.max(0, emails.filter((email) => !email.isArchived).length);
   $: autoRefreshLabel = autoRefreshing ? $t('common.syncing') : $t('dashboard.autoRefreshActive');
+  $: if (hasMounted && normalizedQuery !== lastSearchQuery) {
+    lastSearchQuery = normalizedQuery;
+    scheduleSearchRefresh();
+  }
 
-  async function refreshInbox() {
-    if (autoRefreshing || document.hidden) {
+  function scheduleSearchRefresh() {
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
+    }
+    searchDebounceTimer = setTimeout(() => {
+      void refreshInbox({ force: true });
+    }, SEARCH_DEBOUNCE_MS);
+  }
+
+  async function refreshInbox(options: { force?: boolean } = {}) {
+    if ((!options.force && autoRefreshing) || (!options.force && document.hidden)) {
       return;
     }
 
+    const requestId = ++inboxRequestId;
+    const requestQuery = normalizedQuery;
     autoRefreshing = true;
     try {
-      const response = await fetch('/api/me/inbox', {
+      const url = new URL('/api/me/inbox', window.location.origin);
+      if (requestQuery) {
+        url.searchParams.set('q', requestQuery);
+      }
+
+      const response = await fetch(`${url.pathname}${url.search}`, {
         headers: {
           accept: 'application/json'
         }
@@ -53,14 +74,21 @@
         return;
       }
 
+      if (requestId !== inboxRequestId || requestQuery !== normalizedQuery) {
+        return;
+      }
+
       emails = payload.emails;
       archivedCount = Number(payload.archivedCount ?? archivedCount);
     } finally {
-      autoRefreshing = false;
+      if (requestId === inboxRequestId) {
+        autoRefreshing = false;
+      }
     }
   }
 
   onMount(() => {
+    hasMounted = true;
     autoRefreshTimer = setInterval(refreshInbox, AUTO_REFRESH_INTERVAL_MS);
     const handleVisibilityChange = () => {
       if (!document.hidden) {
@@ -73,6 +101,9 @@
       if (autoRefreshTimer) {
         clearInterval(autoRefreshTimer);
       }
+      if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+      }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
@@ -80,6 +111,9 @@
   onDestroy(() => {
     if (autoRefreshTimer) {
       clearInterval(autoRefreshTimer);
+    }
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
     }
   });
 </script>

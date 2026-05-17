@@ -12,8 +12,8 @@ export async function getUsers(event: RequestEvent): Promise<UserDto[]> {
   return getUsersFromDb(event.platform?.env?.DB);
 }
 
-export async function getUserInbox(event: RequestEvent, userId: string): Promise<EmailDto[]> {
-  return getUserInboxFromDb(event.platform?.env?.DB, userId);
+export async function getUserInbox(event: RequestEvent, userId: string, query = ''): Promise<EmailDto[]> {
+  return getUserInboxFromDb(event.platform?.env?.DB, userId, { query });
 }
 
 export async function getUserArchivedEmailCount(event: RequestEvent, userId: string): Promise<number> {

@@ -57,6 +57,10 @@ interface UpsertInboundEmailInput {
   headersJson?: string;
 }
 
+interface GetUserInboxOptions {
+  query?: string;
+}
+
 export interface AuthUserRecord {
   id: string;
   email: string;
@@ -2825,10 +2829,39 @@ function truncateNullable(value: string, max: number): string | null {
   return trimmed.slice(0, max);
 }
 
-export async function getUserInboxFromDb(db: D1Database | undefined, userId: string): Promise<EmailDto[]> {
+export async function getUserInboxFromDb(
+  db: D1Database | undefined,
+  userId: string,
+  options: GetUserInboxOptions = {}
+): Promise<EmailDto[]> {
   if (!db) {
     return inboxFallback(userId);
   }
+
+  const searchQuery = normalizeInboxSearchQuery(options.query ?? '');
+  const searchPattern = searchQuery ? `%${escapeLikePattern(searchQuery)}%` : '';
+  const searchSelect = searchQuery
+    ? `,
+      body_text,
+      body_html,
+      parsed_text,
+      parsed_html`
+    : '';
+  const searchWhere = searchQuery
+    ? `
+      AND (
+        lower(COALESCE(sender, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(recipient, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(parsed_from_email, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(subject, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(snippet, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(body_text, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(parsed_text, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(body_html, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(parsed_html, '')) LIKE ? ESCAPE '!'
+      )
+    `
+    : '';
 
   const query = `
     SELECT
@@ -2840,21 +2873,32 @@ export async function getUserInboxFromDb(db: D1Database | undefined, userId: str
       is_read,
       is_starred,
       is_archived
+      ${searchSelect}
     FROM emails
     WHERE user_id = ?
       AND deleted_at IS NULL
+      ${searchWhere}
     LIMIT 1000
   `;
-  const { results } = await db.prepare(query).bind(userId).all<Record<string, unknown>>();
-  return (results ?? []).map((row) => mapEmailSummaryRow(row)).sort(sortInboxEmailsByDateDesc).slice(0, 100);
+  const bindings = searchQuery ? [userId, ...Array.from({ length: 9 }, () => searchPattern)] : [userId];
+  const { results } = await db
+    .prepare(query)
+    .bind(...bindings)
+    .all<Record<string, unknown>>();
+  return (results ?? [])
+    .map((row) => mapEmailSummaryRow(row, searchQuery))
+    .sort(sortInboxEmailsByDateDesc)
+    .slice(0, 100);
 }
 
-function mapEmailSummaryRow(row: Record<string, unknown>): EmailDto {
+function mapEmailSummaryRow(row: Record<string, unknown>, searchQuery = ''): EmailDto {
+  const snippet = String(row.snippet ?? '');
   return {
     id: String(row.id),
     sender: String(row.sender ?? ''),
     subject: String(row.subject ?? '(Tanpa Subjek)'),
-    snippet: String(row.snippet ?? ''),
+    snippet,
+    searchSnippet: searchQuery ? buildEmailSearchSnippet(row, searchQuery, snippet) : '',
     receivedAt: String(row.received_at ?? ''),
     isRead: Number(row.is_read ?? 0) === 1,
     isStarred: Number(row.is_starred ?? 0) === 1,
@@ -2872,6 +2916,55 @@ function sortInboxEmailsByDateDesc(a: EmailDto, b: EmailDto): number {
     return dateDiff;
   }
   return b.id.localeCompare(a.id);
+}
+
+function normalizeInboxSearchQuery(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase().slice(0, 120);
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/!/g, '!!').replace(/%/g, '!%').replace(/_/g, '!_');
+}
+
+function buildEmailSearchSnippet(row: Record<string, unknown>, searchQuery: string, fallbackSnippet: string): string {
+  const bodyText = String(row.body_text ?? '');
+  const parsedText = String(row.parsed_text ?? '');
+  const bodyHtml = String(row.body_html ?? '');
+  const parsedHtml = String(row.parsed_html ?? '');
+  const candidates = [
+    fallbackSnippet,
+    bodyText,
+    parsedText,
+    bodyHtml ? htmlToPlainText(bodyHtml) : '',
+    parsedHtml ? htmlToPlainText(parsedHtml) : ''
+  ];
+
+  for (const candidate of candidates) {
+    const excerpt = createSearchExcerpt(candidate, searchQuery);
+    if (excerpt) {
+      return excerpt;
+    }
+  }
+
+  return fallbackSnippet;
+}
+
+function createSearchExcerpt(value: string, searchQuery: string): string {
+  const normalizedValue = value.replace(/\s+/g, ' ').trim();
+  if (!normalizedValue) {
+    return '';
+  }
+
+  const matchIndex = normalizedValue.toLowerCase().indexOf(searchQuery);
+  if (matchIndex < 0) {
+    return '';
+  }
+
+  const start = Math.max(0, matchIndex - 82);
+  const end = Math.min(normalizedValue.length, matchIndex + searchQuery.length + 138);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < normalizedValue.length ? '...' : '';
+  return `${prefix}${normalizedValue.slice(start, end)}${suffix}`;
 }
 
 export async function getEmailByIdFromDb(

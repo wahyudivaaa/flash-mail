@@ -106,7 +106,7 @@
             </div>
             <div class="summary">
               <span class="subject">{email.subject}</span>
-              <span class="snippet">{email.snippet}</span>
+              <span class="snippet">{email.searchSnippet || email.snippet}</span>
             </div>
             <div class="time">{timeLabel(email.receivedAt)}</div>
           </a>
@@ -121,7 +121,7 @@
           </div>
           <div class="sender">{email.sender}</div>
           <div class="subject">{email.subject}</div>
-          <div class="snippet">{email.snippet}</div>
+          <div class="snippet">{email.searchSnippet || email.snippet}</div>
           <div class="time">{new Date(email.receivedAt).toLocaleString($locale === 'en' ? 'en-US' : 'id-ID')}</div>
         </a>
       {/each}

@@ -32,6 +32,7 @@ export interface EmailDto {
   sender: string;
   subject: string;
   snippet: string;
+  searchSnippet?: string;
   receivedAt: string;
   isRead: boolean;
   isStarred: boolean;
