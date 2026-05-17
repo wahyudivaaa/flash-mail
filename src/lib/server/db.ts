@@ -67,6 +67,11 @@ interface SearchEmailsAcrossUsersOptions {
   limit?: number;
 }
 
+interface GetUsersOptions {
+  query?: string;
+  limit?: number;
+}
+
 export interface AuthUserRecord {
   id: string;
   email: string;
@@ -131,13 +136,27 @@ export async function getDashboardMetrics(db?: D1Database): Promise<DashboardDto
   };
 }
 
-export async function getUsersFromDb(db?: D1Database): Promise<UserDto[]> {
+export async function getUsersFromDb(db?: D1Database, options: GetUsersOptions = {}): Promise<UserDto[]> {
+  const searchQuery = normalizeInboxSearchQuery(options.query ?? '');
+  const limit = normalizeSearchLimit(options.limit ?? (searchQuery ? 200 : 150));
+
   if (!db) {
-    return usersFallback;
+    return searchUsersFallback(searchQuery, limit);
   }
 
   await backfillRecentGptPlusDeactivationsFromDb(db);
 
+  const searchWhere = searchQuery
+    ? `
+      AND (
+        lower(COALESCE(u.email, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(u.display_name, '')) LIKE ? ESCAPE '!'
+        OR lower(CASE WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner' ELSE 'member' END) LIKE ? ESCAPE '!'
+        OR lower(CASE WHEN u.password_hash IS NULL THEN 'disabled' ELSE 'active' END) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(c.initial_password, '')) LIKE ? ESCAPE '!'
+      )
+    `
+    : '';
   const query = `
     WITH owner AS (
       SELECT id AS owner_id
@@ -177,13 +196,18 @@ export async function getUsersFromDb(db?: D1Database): Promise<UserDto[]> {
       ON e.user_id = u.id
       AND e.deleted_at IS NULL
     WHERE u.password_hash IS NOT NULL
+      ${searchWhere}
     GROUP BY u.id, u.email, u.display_name, u.password_hash, g.user_id, g.claimed_at, g.status, c.initial_password
     ORDER BY u.created_at DESC, u.id DESC
-    LIMIT 100
+    LIMIT ?
   `;
+  const bindings = searchQuery ? [...Array.from({ length: 5 }, () => `%${escapeLikePattern(searchQuery)}%`), limit] : [limit];
   let results: Record<string, unknown>[] | undefined;
   try {
-    const response = await db.prepare(query).all<Record<string, unknown>>();
+    const response = await db
+      .prepare(query)
+      .bind(...bindings)
+      .all<Record<string, unknown>>();
     results = response.results;
   } catch (error) {
     if (
@@ -193,7 +217,7 @@ export async function getUsersFromDb(db?: D1Database): Promise<UserDto[]> {
     ) {
       throw error;
     }
-    return getUsersWithoutGptClaimsFromDb(db);
+    return getUsersWithoutGptClaimsFromDb(db, options);
   }
 
   return (results ?? []).map((row) => mapUserRow(row));
@@ -278,7 +302,20 @@ export async function getUserByIdFromDb(db: D1Database | undefined, userId: stri
   return mapUserRow(resolvedRow);
 }
 
-async function getUsersWithoutGptClaimsFromDb(db: D1Database): Promise<UserDto[]> {
+async function getUsersWithoutGptClaimsFromDb(db: D1Database, options: GetUsersOptions = {}): Promise<UserDto[]> {
+  const searchQuery = normalizeInboxSearchQuery(options.query ?? '');
+  const limit = normalizeSearchLimit(options.limit ?? (searchQuery ? 200 : 150));
+  const searchWhere = searchQuery
+    ? `
+      AND (
+        lower(COALESCE(u.email, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(u.display_name, '')) LIKE ? ESCAPE '!'
+        OR lower(CASE WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner' ELSE 'member' END) LIKE ? ESCAPE '!'
+        OR lower(CASE WHEN u.password_hash IS NULL THEN 'disabled' ELSE 'active' END) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(c.initial_password, '')) LIKE ? ESCAPE '!'
+      )
+    `
+    : '';
   let results: Record<string, unknown>[] | undefined;
   try {
     const response = await db
@@ -316,18 +353,20 @@ async function getUsersWithoutGptClaimsFromDb(db: D1Database): Promise<UserDto[]
         ON e.user_id = u.id
         AND e.deleted_at IS NULL
       WHERE u.password_hash IS NOT NULL
+        ${searchWhere}
       GROUP BY u.id, u.email, u.display_name, u.password_hash, c.initial_password
       ORDER BY u.created_at DESC, u.id DESC
-      LIMIT 100
+      LIMIT ?
     `
       )
+      .bind(...(searchQuery ? [...Array.from({ length: 5 }, () => `%${escapeLikePattern(searchQuery)}%`), limit] : [limit]))
       .all<Record<string, unknown>>();
     results = response.results;
   } catch (error) {
     if (!isMissingOptionalTableError(error, 'user_initial_credentials') && !isMissingOptionalTableError(error, 'user_email_aliases')) {
       throw error;
     }
-    return getUsersWithoutOptionalUserTablesFromDb(db);
+    return getUsersWithoutOptionalUserTablesFromDb(db, options);
   }
 
   return (results ?? []).map((row) => ({
@@ -348,7 +387,19 @@ async function getUsersWithoutGptClaimsFromDb(db: D1Database): Promise<UserDto[]
   }));
 }
 
-async function getUsersWithoutOptionalUserTablesFromDb(db: D1Database): Promise<UserDto[]> {
+async function getUsersWithoutOptionalUserTablesFromDb(db: D1Database, options: GetUsersOptions = {}): Promise<UserDto[]> {
+  const searchQuery = normalizeInboxSearchQuery(options.query ?? '');
+  const limit = normalizeSearchLimit(options.limit ?? (searchQuery ? 200 : 150));
+  const searchWhere = searchQuery
+    ? `
+      AND (
+        lower(COALESCE(u.email, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(u.display_name, '')) LIKE ? ESCAPE '!'
+        OR lower(CASE WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner' ELSE 'member' END) LIKE ? ESCAPE '!'
+        OR lower(CASE WHEN u.password_hash IS NULL THEN 'disabled' ELSE 'active' END) LIKE ? ESCAPE '!'
+      )
+    `
+    : '';
   const { results } = await db
     .prepare(
       `
@@ -377,11 +428,13 @@ async function getUsersWithoutOptionalUserTablesFromDb(db: D1Database): Promise<
         ON e.user_id = u.id
         AND e.deleted_at IS NULL
       WHERE u.password_hash IS NOT NULL
+        ${searchWhere}
       GROUP BY u.id, u.email, u.display_name, u.password_hash
       ORDER BY u.created_at DESC, u.id DESC
-      LIMIT 100
+      LIMIT ?
     `
     )
+    .bind(...(searchQuery ? [...Array.from({ length: 4 }, () => `%${escapeLikePattern(searchQuery)}%`), limit] : [limit]))
     .all<Record<string, unknown>>();
 
   return (results ?? []).map((row) => ({
@@ -486,6 +539,19 @@ function mapUserRow(row: Record<string, unknown>): UserDto {
     totalEmails: Number(row.total_emails ?? 0),
     unreadEmails: Number(row.unread_emails ?? 0)
   };
+}
+
+function searchUsersFallback(searchQuery: string, limit: number): UserDto[] {
+  const source = usersFallback.filter((user) => user.status === 'active');
+  const filtered = searchQuery
+    ? source.filter((user) =>
+        [user.email, user.displayName, user.role, user.status, user.initialPassword ?? ''].some((value) =>
+          value.toLowerCase().includes(searchQuery)
+        )
+      )
+    : source;
+
+  return filtered.slice(0, limit);
 }
 
 function normalizeGptPlusStatus(value: string, hasClaim: boolean): UserDto['gptPlusStatus'] {

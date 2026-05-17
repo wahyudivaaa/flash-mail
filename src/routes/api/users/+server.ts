@@ -12,12 +12,13 @@ import {
   normalizeExternalMailDomain
 } from '$lib/server/external-mail-providers';
 
-export const GET: RequestHandler = async ({ platform, locals }) => {
+export const GET: RequestHandler = async ({ platform, locals, request }) => {
   if (locals.sessionRole !== 'owner') {
     return json({ error: 'Akses ditolak' }, { status: 403 });
   }
 
-  const users = await getUsersFromDb(platform?.env?.DB);
+  const query = new URL(request.url).searchParams.get('q') ?? '';
+  const users = await getUsersFromDb(platform?.env?.DB, { query });
   return json({ users });
 };
 

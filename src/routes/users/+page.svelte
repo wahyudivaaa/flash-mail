@@ -11,12 +11,16 @@
   export let data: PageData;
 
   const AUTO_REFRESH_INTERVAL_MS = 5000;
+  const SEARCH_DEBOUNCE_MS = 300;
 
-  let searchQuery = '';
+  let searchQuery = data.initialQuery ?? '';
   let users: UserDto[] = data.users;
   let domains: MailDomainDto[] = data.domains;
   let autoRefreshing = false;
   let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  let searchRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let userRequestId = 0;
+  let mounted = false;
 
   $: domains = data.domains;
   $: normalizedQuery = searchQuery.trim().toLowerCase();
@@ -27,25 +31,44 @@
         )
       )
     : users;
+  $: if (mounted) {
+    scheduleSearchRefresh(normalizedQuery);
+  }
 
   async function handleUserCreated() {
     await invalidateAll();
-    await refreshUsers();
+    await refreshUsers(normalizedQuery);
   }
 
   async function handleUserChanged() {
     await invalidateAll();
-    await refreshUsers();
+    await refreshUsers(normalizedQuery);
   }
 
-  async function refreshUsers() {
+  function scheduleSearchRefresh(query: string) {
+    if (searchRefreshTimer) {
+      clearTimeout(searchRefreshTimer);
+    }
+
+    searchRefreshTimer = setTimeout(() => {
+      void refreshUsers(query);
+    }, SEARCH_DEBOUNCE_MS);
+  }
+
+  async function refreshUsers(query = normalizedQuery) {
     if (autoRefreshing || document.hidden) {
       return;
     }
 
+    const requestId = ++userRequestId;
     autoRefreshing = true;
     try {
-      const response = await fetch('/api/users', {
+      const url = new URL('/api/users', window.location.origin);
+      if (query) {
+        url.searchParams.set('q', query);
+      }
+
+      const response = await fetch(url, {
         headers: {
           accept: 'application/json'
         }
@@ -55,15 +78,18 @@
       }
 
       const payload = (await response.json().catch(() => null)) as { users?: UserDto[] } | null;
-      if (payload?.users) {
+      if (requestId === userRequestId && payload?.users) {
         users = payload.users;
       }
     } finally {
-      autoRefreshing = false;
+      if (requestId === userRequestId) {
+        autoRefreshing = false;
+      }
     }
   }
 
   onMount(() => {
+    mounted = true;
     autoRefreshTimer = setInterval(refreshUsers, AUTO_REFRESH_INTERVAL_MS);
     const handleVisibilityChange = () => {
       if (!document.hidden) {
@@ -76,6 +102,9 @@
       if (autoRefreshTimer) {
         clearInterval(autoRefreshTimer);
       }
+      if (searchRefreshTimer) {
+        clearTimeout(searchRefreshTimer);
+      }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
@@ -83,6 +112,9 @@
   onDestroy(() => {
     if (autoRefreshTimer) {
       clearInterval(autoRefreshTimer);
+    }
+    if (searchRefreshTimer) {
+      clearTimeout(searchRefreshTimer);
     }
   });
 </script>

@@ -8,8 +8,8 @@ import {
   getUsersFromDb
 } from '$lib/server/db';
 
-export async function getUsers(event: RequestEvent): Promise<UserDto[]> {
-  return getUsersFromDb(event.platform?.env?.DB);
+export async function getUsers(event: RequestEvent, query = ''): Promise<UserDto[]> {
+  return getUsersFromDb(event.platform?.env?.DB, { query });
 }
 
 export async function getUserInbox(event: RequestEvent, userId: string, query = ''): Promise<EmailDto[]> {
