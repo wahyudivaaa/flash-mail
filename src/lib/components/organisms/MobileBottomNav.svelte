@@ -7,6 +7,7 @@
   const items = [
     { key: 'dashboard', href: '/dashboard', labelKey: 'nav.dashboard', icon: 'dashboard' },
     { key: 'users', href: '/users', labelKey: 'nav.usersShort', icon: 'group' },
+    { key: 'email-search', href: '/email-search', labelKey: 'nav.emailSearchShort', icon: 'manage_search' },
     { key: 'gpt-plus', href: '/gpt-plus', labelKey: 'nav.gptPlus', icon: 'workspace_premium' },
     { key: 'kiro-github', href: '/kiro-github', labelKey: 'nav.kiroGithubShort', icon: 'code_blocks' },
     { key: 'dot-aliases', href: '/dot-aliases', labelKey: 'nav.dotAliasesShort', icon: 'alternate_email' },
@@ -24,6 +25,7 @@
     if (path.startsWith('/dot-aliases')) return 'dot-aliases';
     if (path.startsWith('/kiro-github')) return 'kiro-github';
     if (path.startsWith('/gpt-plus')) return 'gpt-plus';
+    if (path.startsWith('/email-search')) return 'email-search';
     if (path.startsWith('/users')) return 'users';
     if (path.startsWith('/dashboard')) return 'dashboard';
     return '';
@@ -69,7 +71,7 @@
     bottom: 0;
     z-index: 20;
     display: none;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 0.25rem;
     min-height: var(--mobile-nav-height);
     padding: 0.45rem 0.42rem calc(0.45rem + env(safe-area-inset-bottom));

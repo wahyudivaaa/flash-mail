@@ -39,6 +39,15 @@ export interface EmailDto {
   isArchived: boolean;
 }
 
+export interface AdminEmailSearchResultDto extends EmailDto {
+  userId: string;
+  userEmail: string;
+  userDisplayName: string;
+  userRole: string;
+  userStatus: 'active' | 'disabled';
+  recipient: string;
+}
+
 export interface EmailDetailDto {
   id: string;
   userId: string;

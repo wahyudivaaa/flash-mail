@@ -1,4 +1,5 @@
 import type {
+  AdminEmailSearchResultDto,
   DashboardDto,
   DotAliasGenerationDto,
   DotAliasUsageDto,
@@ -59,6 +60,11 @@ interface UpsertInboundEmailInput {
 
 interface GetUserInboxOptions {
   query?: string;
+}
+
+interface SearchEmailsAcrossUsersOptions {
+  query?: string;
+  limit?: number;
 }
 
 export interface AuthUserRecord {
@@ -2891,6 +2897,87 @@ export async function getUserInboxFromDb(
     .slice(0, 100);
 }
 
+export async function searchEmailsAcrossUsersFromDb(
+  db: D1Database | undefined,
+  options: SearchEmailsAcrossUsersOptions = {}
+): Promise<AdminEmailSearchResultDto[]> {
+  const searchQuery = normalizeInboxSearchQuery(options.query ?? '');
+  const limit = normalizeSearchLimit(options.limit ?? 100);
+
+  if (!searchQuery || searchQuery.length < 2) {
+    return [];
+  }
+
+  if (!db) {
+    return searchEmailsAcrossUsersFallback(searchQuery, limit);
+  }
+
+  const searchPattern = `%${escapeLikePattern(searchQuery)}%`;
+  const searchBindings = Array.from({ length: 12 }, () => searchPattern);
+  const query = `
+    WITH owner AS (
+      SELECT id AS owner_id
+      FROM users
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    )
+    SELECT
+      e.id,
+      e.user_id,
+      e.sender,
+      e.recipient,
+      COALESCE(e.subject, e.parsed_subject, '(Tanpa Subjek)') AS subject,
+      e.snippet,
+      e.received_at,
+      e.is_read,
+      e.is_starred,
+      e.is_archived,
+      e.body_text,
+      e.body_html,
+      e.parsed_text,
+      e.parsed_html,
+      u.email AS user_email,
+      COALESCE(u.display_name, u.email) AS user_display_name,
+      CASE
+        WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner'
+        ELSE 'member'
+      END AS user_role,
+      CASE
+        WHEN u.password_hash IS NULL THEN 'disabled'
+        ELSE 'active'
+      END AS user_status
+    FROM emails e
+    INNER JOIN users u
+      ON u.id = e.user_id
+    WHERE e.deleted_at IS NULL
+      AND (
+        lower(COALESCE(u.email, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(u.display_name, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.sender, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.recipient, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.parsed_from_email, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.subject, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.parsed_subject, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.snippet, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.body_text, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.parsed_text, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.body_html, '')) LIKE ? ESCAPE '!'
+        OR lower(COALESCE(e.parsed_html, '')) LIKE ? ESCAPE '!'
+      )
+    LIMIT 1000
+  `;
+
+  const { results } = await db
+    .prepare(query)
+    .bind(...searchBindings)
+    .all<Record<string, unknown>>();
+
+  return (results ?? [])
+    .map((row) => mapAdminEmailSearchResultRow(row, searchQuery))
+    .sort(sortInboxEmailsByDateDesc)
+    .slice(0, limit);
+}
+
 function mapEmailSummaryRow(row: Record<string, unknown>, searchQuery = ''): EmailDto {
   const snippet = String(row.snippet ?? '');
   return {
@@ -2903,6 +2990,18 @@ function mapEmailSummaryRow(row: Record<string, unknown>, searchQuery = ''): Ema
     isRead: Number(row.is_read ?? 0) === 1,
     isStarred: Number(row.is_starred ?? 0) === 1,
     isArchived: Number(row.is_archived ?? 0) === 1
+  };
+}
+
+function mapAdminEmailSearchResultRow(row: Record<string, unknown>, searchQuery: string): AdminEmailSearchResultDto {
+  return {
+    ...mapEmailSummaryRow(row, searchQuery),
+    userId: String(row.user_id ?? ''),
+    userEmail: String(row.user_email ?? ''),
+    userDisplayName: String(row.user_display_name ?? row.user_email ?? ''),
+    userRole: String(row.user_role ?? 'member'),
+    userStatus: String(row.user_status ?? 'active') === 'disabled' ? 'disabled' : 'active',
+    recipient: String(row.recipient ?? '')
   };
 }
 
@@ -2924,6 +3023,14 @@ function normalizeInboxSearchQuery(value: string): string {
 
 function escapeLikePattern(value: string): string {
   return value.replace(/!/g, '!!').replace(/%/g, '!%').replace(/_/g, '!_');
+}
+
+function normalizeSearchLimit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 100;
+  }
+
+  return Math.min(200, Math.max(1, Math.trunc(value)));
 }
 
 function buildEmailSearchSnippet(row: Record<string, unknown>, searchQuery: string, fallbackSnippet: string): string {
@@ -2965,6 +3072,30 @@ function createSearchExcerpt(value: string, searchQuery: string): string {
   const prefix = start > 0 ? '...' : '';
   const suffix = end < normalizedValue.length ? '...' : '';
   return `${prefix}${normalizedValue.slice(start, end)}${suffix}`;
+}
+
+function searchEmailsAcrossUsersFallback(searchQuery: string, limit: number): AdminEmailSearchResultDto[] {
+  return usersFallback
+    .flatMap((user) =>
+      inboxFallback(user.id)
+        .filter((email) =>
+          [user.email, user.displayName, user.role, email.sender, email.subject, email.snippet].some((value) =>
+            value.toLowerCase().includes(searchQuery)
+          )
+        )
+        .map((email) => ({
+          ...email,
+          searchSnippet: createSearchExcerpt(email.snippet, searchQuery) || email.snippet,
+          userId: user.id,
+          userEmail: user.email,
+          userDisplayName: user.displayName,
+          userRole: user.role,
+          userStatus: user.status,
+          recipient: user.email
+        }))
+    )
+    .sort(sortInboxEmailsByDateDesc)
+    .slice(0, limit);
 }
 
 export async function getEmailByIdFromDb(
