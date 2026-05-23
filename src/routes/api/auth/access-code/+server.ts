@@ -9,6 +9,7 @@ import {
   SESSION_COOKIE_NAME,
   SESSION_MAX_AGE_SECONDS
 } from '$lib/server/session';
+import { getTurnstileSecretKey, isTurnstileVerificationEnabled } from '$lib/server/turnstile';
 
 interface AccessCodeBody {
   code?: string;
@@ -28,9 +29,10 @@ export const POST: RequestHandler = async ({ request, cookies, platform, url }) 
 
   const body = (await request.json().catch(() => null)) as AccessCodeBody | null;
   const turnstileToken = body?.turnstileToken ?? '';
-  const turnstileSecret = platform?.env?.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
+  const shouldVerifyTurnstile = isTurnstileVerificationEnabled(platform?.env);
+  const turnstileSecret = getTurnstileSecretKey(platform?.env);
 
-  if (turnstileSecret && turnstileToken) {
+  if (shouldVerifyTurnstile && turnstileToken) {
     const formData = new FormData();
     formData.append('secret', turnstileSecret);
     formData.append('response', turnstileToken);
@@ -52,7 +54,7 @@ export const POST: RequestHandler = async ({ request, cookies, platform, url }) 
     } catch (e) {
       return json({ error: 'Gagal terhubung dengan layanan keamanan saat ini.' }, { status: 500 });
     }
-  } else if (!turnstileToken) {
+  } else if (shouldVerifyTurnstile && !turnstileToken) {
       return json({ error: 'Selesaikan verifikasi keamanan / Captcha terlebih dahulu' }, { status: 400 });
   }
 

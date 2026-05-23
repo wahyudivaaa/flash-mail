@@ -4,6 +4,7 @@ import { createUserInDb, getUserAuthByEmail } from '$lib/server/db';
 import { createLoginSession, extractClientIp, extractUserAgent, SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS } from '$lib/server/session';
 import { hashPassword, verifyPassword } from '$lib/server/security';
 import { getDefaultMailDomain } from '$lib/server/mail-domains';
+import { getTurnstileSecretKey, isTurnstileVerificationEnabled } from '$lib/server/turnstile';
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -84,9 +85,9 @@ export const POST: RequestHandler = async ({ request, cookies, platform, url }) 
       }
     }
 
-    // Verifikasi Cloudflare Turnstile
-    const turnstileSecret = platform?.env?.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA'; // Secret dummy untuk pengujian.
-    if (turnstileSecret && turnstileToken) {
+    const shouldVerifyTurnstile = isTurnstileVerificationEnabled(platform?.env);
+    const turnstileSecret = getTurnstileSecretKey(platform?.env);
+    if (shouldVerifyTurnstile && turnstileToken) {
       const formData = new FormData();
       formData.append('secret', turnstileSecret);
       formData.append('response', turnstileToken);
@@ -108,7 +109,7 @@ export const POST: RequestHandler = async ({ request, cookies, platform, url }) 
       } catch (e) {
         return json({ error: 'Gagal terhubung dengan layanan keamanan saat ini.' }, { status: 500 });
       }
-    } else if (!turnstileToken) {
+    } else if (shouldVerifyTurnstile && !turnstileToken) {
         return json({ error: 'Selesaikan verifikasi keamanan / Captcha terlebih dahulu' }, { status: 400 });
     }
 

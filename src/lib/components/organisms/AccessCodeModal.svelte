@@ -12,9 +12,13 @@
   let isSubmitting = false;
   let turnstileToken = '';
 
-  export let turnstileSiteKey: string;
+  export let turnstileSiteKey = '';
 
   onMount(() => {
+    if (!turnstileSiteKey) {
+      return;
+    }
+
     if (typeof window !== 'undefined') {
       const tTimer = setInterval(() => {
         if ((window as any).turnstile) {
@@ -27,6 +31,10 @@
           });
         }
       }, 200);
+
+      return () => {
+        clearInterval(tTimer);
+      };
     }
   });
 
@@ -82,9 +90,11 @@
         <label for="access_code">{$t('access.codeLabel')}</label>
         <InputText id="access_code" bind:value={accessCode} placeholder="MF-XXXX-XXXX-XXXX" />
       </div>
-      <div class="field turnstile-container">
-        <div id="turnstile-widget"></div>
-      </div>
+      {#if turnstileSiteKey}
+        <div class="field turnstile-container">
+          <div id="turnstile-widget"></div>
+        </div>
+      {/if}
       {#if errorMessage}
         <p class="error">{errorMessage}</p>
       {/if}

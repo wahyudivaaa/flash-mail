@@ -1,4 +1,5 @@
 import type { PageServerLoad } from './$types';
+import { getTurnstileSiteKey } from '$lib/server/turnstile';
 
 export const load: PageServerLoad = async ({ platform }) => {
     const db = platform?.env?.DB;
@@ -14,7 +15,7 @@ export const load: PageServerLoad = async ({ platform }) => {
     }
 
     return {
-        turnstileSiteKey: platform?.env?.TURNSTILE_SITE_KEY || '1x00000000000000000000AA',
+        turnstileSiteKey: getTurnstileSiteKey(platform?.env),
         requiresSetupToken
     };
 };

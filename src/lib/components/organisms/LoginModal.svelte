@@ -16,10 +16,14 @@
   let showPassword = false;
   let turnstileToken = '';
 
-  export let turnstileSiteKey: string;
+  export let turnstileSiteKey = '';
   export let showSetupTokenField = false;
 
   onMount(() => {
+    if (!turnstileSiteKey) {
+      return;
+    }
+
     // Memuat script dengan Svelte-kit tidak terblokir
     if (typeof window !== 'undefined') {
       // Pastikan ada instance render dan script akan memanggil callback on_cf_load jika diperlukan
@@ -34,6 +38,10 @@
           });
         }
       }, 200);
+
+      return () => {
+        clearInterval(tTimer);
+      };
     }
   });
 
@@ -123,9 +131,11 @@
           </div>
         </div>
       {/if}
-      <div class="field turnstile-container">
-        <div id="turnstile-widget"></div>
-      </div>
+      {#if turnstileSiteKey}
+        <div class="field turnstile-container">
+          <div id="turnstile-widget"></div>
+        </div>
+      {/if}
       {#if errorMessage}
         <p class="error">{errorMessage}</p>
       {/if}
