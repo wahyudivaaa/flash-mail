@@ -164,6 +164,24 @@ export interface KiroGithubClaimDto {
   securityLogUrl: string;
 }
 
+export interface PioneerAiClaimDto {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: string;
+  initialPassword: string;
+  detectedAt: string;
+  emailId: string;
+  detectedSubject: string;
+  detectedSender: string;
+  recipient: string;
+  status: 'detected' | 'confirmed' | 'magic_link';
+  confirmedAt: string;
+  confirmationEmailId: string;
+  magicLinkAt: string;
+  magicLinkEmailId: string;
+}
+
 export interface DotAliasUsageDto {
   email: string;
   used: boolean;

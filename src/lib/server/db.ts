@@ -7,6 +7,7 @@ import type {
   EmailDto,
   GptPlusClaimDto,
   KiroGithubClaimDto,
+  PioneerAiClaimDto,
   UserDto
 } from '$lib/types/dto';
 import type { WorkerSettingsPageDto } from '$lib/server/services/worker-settings.service';
@@ -14,8 +15,10 @@ import PostalMime from 'postal-mime';
 
 const GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS = 60_000;
 const KIRO_GITHUB_BACKFILL_INTERVAL_MS = 60_000;
+const PIONEER_AI_BACKFILL_INTERVAL_MS = 60_000;
 let lastGptPlusDeactivationBackfillAt = 0;
 let lastKiroGithubBackfillAt = 0;
+let lastPioneerAiBackfillAt = 0;
 
 interface CreateUserInput {
   email: string;
@@ -809,6 +812,20 @@ export async function upsertInboundEmailInDb(
   });
 
   await detectAndStoreKiroGithubClaim(db, {
+    userId,
+    emailId,
+    sender,
+    recipient,
+    subject,
+    snippet,
+    bodyText,
+    bodyHtml: parsedHtml,
+    parsedSubject: subject,
+    parsedSender: fromMailbox.email || sender,
+    receivedAt
+  });
+
+  await detectAndStorePioneerAiClaim(db, {
     userId,
     emailId,
     sender,
@@ -1886,6 +1903,89 @@ async function detectAndStoreKiroGithubClaim(db: D1Database, input: DetectGptPlu
   }
 }
 
+async function detectAndStorePioneerAiClaim(db: D1Database, input: DetectGptPlusClaimInput): Promise<void> {
+  const subject = (input.parsedSubject || input.subject || '').trim();
+  const sender = (input.parsedSender || input.sender || '').trim();
+  const recipient = input.recipient.trim().toLowerCase();
+  const rawText = buildPioneerAiRawText(input);
+  const searchText = normalizeSearchText(rawText);
+  if (!isPioneerAiAccountEmail(subject, sender, searchText)) {
+    return;
+  }
+
+  const detectedAt = input.receivedAt || new Date().toISOString();
+  const status = getPioneerAiEmailStatus(subject, searchText);
+  const isConfirmed = status === 'confirmed';
+  const isMagicLink = status === 'magic_link';
+
+  try {
+    await db
+      .prepare(
+        `
+      INSERT INTO pioneer_ai_claims (
+        user_id,
+        email_id,
+        detected_at,
+        detected_subject,
+        detected_sender,
+        recipient,
+        status,
+        confirmed_at,
+        confirmation_email_id,
+        magic_link_at,
+        magic_link_email_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        email_id = excluded.email_id,
+        detected_at = excluded.detected_at,
+        detected_subject = excluded.detected_subject,
+        detected_sender = excluded.detected_sender,
+        recipient = excluded.recipient,
+        status = CASE
+          WHEN excluded.status = 'magic_link' OR pioneer_ai_claims.status = 'magic_link' THEN 'magic_link'
+          WHEN excluded.status = 'confirmed' OR pioneer_ai_claims.status = 'confirmed' THEN 'confirmed'
+          ELSE 'detected'
+        END,
+        confirmed_at = CASE
+          WHEN excluded.confirmed_at != '' THEN excluded.confirmed_at
+          ELSE pioneer_ai_claims.confirmed_at
+        END,
+        confirmation_email_id = CASE
+          WHEN excluded.confirmation_email_id != '' THEN excluded.confirmation_email_id
+          ELSE pioneer_ai_claims.confirmation_email_id
+        END,
+        magic_link_at = CASE
+          WHEN excluded.magic_link_at != '' THEN excluded.magic_link_at
+          ELSE pioneer_ai_claims.magic_link_at
+        END,
+        magic_link_email_id = CASE
+          WHEN excluded.magic_link_email_id != '' THEN excluded.magic_link_email_id
+          ELSE pioneer_ai_claims.magic_link_email_id
+        END
+    `
+      )
+      .bind(
+        input.userId,
+        input.emailId,
+        detectedAt,
+        subject.slice(0, 998),
+        sender.slice(0, 320),
+        recipient.slice(0, 320),
+        status,
+        isConfirmed ? detectedAt : '',
+        isConfirmed ? input.emailId : '',
+        isMagicLink ? detectedAt : '',
+        isMagicLink ? input.emailId : ''
+      )
+      .run();
+  } catch (error) {
+    if (!isMissingOptionalTableError(error, 'pioneer_ai_claims')) {
+      throw error;
+    }
+  }
+}
+
 async function backfillRecentGptPlusDeactivationsFromDb(db: D1Database): Promise<void> {
   const now = Date.now();
   if (now - lastGptPlusDeactivationBackfillAt < GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS) {
@@ -2015,6 +2115,75 @@ async function backfillRecentKiroGithubClaimsFromDb(db: D1Database): Promise<voi
       };
       if (input.userId && input.emailId) {
         await detectAndStoreKiroGithubClaim(db, input);
+      }
+    }
+  } catch {
+    // This is opportunistic. A failed backfill should never block the page.
+  }
+}
+
+async function backfillRecentPioneerAiClaimsFromDb(db: D1Database): Promise<void> {
+  const now = Date.now();
+  if (now - lastPioneerAiBackfillAt < PIONEER_AI_BACKFILL_INTERVAL_MS) {
+    return;
+  }
+  lastPioneerAiBackfillAt = now;
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      SELECT
+        id,
+        user_id,
+        sender,
+        recipient,
+        COALESCE(subject, parsed_subject, '') AS subject,
+        COALESCE(snippet, '') AS snippet,
+        COALESCE(parsed_text, body_text, '') AS body_text,
+        COALESCE(parsed_html, body_html, '') AS body_html,
+        received_at
+      FROM emails
+      WHERE deleted_at IS NULL
+        AND (
+          lower(sender) LIKE '%fastino.ai%'
+          OR lower(COALESCE(parsed_from_email, '')) LIKE '%fastino.ai%'
+          OR lower(COALESCE(parsed_sender, '')) LIKE '%fastino.ai%'
+          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%pioneer%'
+          OR lower(COALESCE(body_text, '')) LIKE '%pioneer%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%pioneer%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%pioneer%'
+        )
+        AND (
+          lower(COALESCE(subject, parsed_subject, '')) LIKE '%confirm your pioneer account%'
+          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%magic link%'
+          OR lower(COALESCE(body_text, '')) LIKE '%confirm your pioneer account%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%confirm your pioneer account%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%confirm your pioneer account%'
+          OR lower(COALESCE(body_text, '')) LIKE '%magic link%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%magic link%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%magic link%'
+        )
+      ORDER BY received_at DESC
+      LIMIT 250
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    for (const row of response.results ?? []) {
+      const input = {
+        userId: String(row.user_id ?? ''),
+        emailId: String(row.id ?? ''),
+        sender: String(row.sender ?? ''),
+        recipient: String(row.recipient ?? ''),
+        subject: String(row.subject ?? ''),
+        snippet: String(row.snippet ?? ''),
+        bodyText: String(row.body_text ?? ''),
+        bodyHtml: String(row.body_html ?? ''),
+        receivedAt: String(row.received_at ?? '')
+      };
+      if (input.userId && input.emailId) {
+        await detectAndStorePioneerAiClaim(db, input);
       }
     }
   } catch {
@@ -2212,6 +2381,42 @@ function isKiroGithubAuthorizationEmail(subject: string, sender: string, searchT
   return githubRelated && kiroOauthRelated && looksAuthorized;
 }
 
+function isPioneerAiAccountEmail(subject: string, sender: string, searchText: string): boolean {
+  const normalizedSubject = subject.toLowerCase();
+  const normalizedSender = sender.toLowerCase();
+  const pioneerRelated =
+    normalizedSender.includes('fastino.ai') ||
+    normalizedSender.includes('pioneer') ||
+    normalizedSubject.includes('pioneer') ||
+    searchText.includes('fastino.ai') ||
+    searchText.includes('pioneer');
+  const looksAccountConfirmation =
+    normalizedSubject.includes('confirm your pioneer account') ||
+    searchText.includes('confirm your pioneer account') ||
+    (searchText.includes('pioneer') && searchText.includes('confirm') && searchText.includes('account'));
+  const looksMagicLink =
+    normalizedSubject.includes('your magic link') ||
+    normalizedSubject.includes('magic link') ||
+    (searchText.includes('magic link') && (searchText.includes('pioneer') || searchText.includes('fastino.ai')));
+
+  return pioneerRelated && (looksAccountConfirmation || looksMagicLink);
+}
+
+function getPioneerAiEmailStatus(subject: string, searchText: string): PioneerAiClaimDto['status'] {
+  const normalizedSubject = subject.toLowerCase();
+  if (
+    normalizedSubject.includes('your magic link') ||
+    normalizedSubject.includes('magic link') ||
+    searchText.includes('magic link')
+  ) {
+    return 'magic_link';
+  }
+  if (normalizedSubject.includes('confirm your pioneer account') || searchText.includes('confirm your pioneer account')) {
+    return 'confirmed';
+  }
+  return 'detected';
+}
+
 function buildGptSignalSearchText(input: DetectGptPlusClaimInput): string {
   return normalizeSearchText(
     [
@@ -2234,6 +2439,10 @@ function buildKiroGithubRawText(input: DetectGptPlusClaimInput): string {
     input.bodyText,
     input.bodyHtml ? htmlToPlainText(input.bodyHtml) : ''
   ].join('\n');
+}
+
+function buildPioneerAiRawText(input: DetectGptPlusClaimInput): string {
+  return buildKiroGithubRawText(input);
 }
 
 function normalizeSearchText(value: string): string {
@@ -2483,6 +2692,109 @@ function sortKiroGithubClaimsByDateDesc(a: KiroGithubClaimDto, b: KiroGithubClai
     return dateDiff;
   }
   return a.email.localeCompare(b.email);
+}
+
+export async function getPioneerAiClaimsFromDb(db: D1Database | undefined): Promise<PioneerAiClaimDto[]> {
+  if (!db) {
+    return [];
+  }
+
+  await backfillRecentPioneerAiClaimsFromDb(db);
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      WITH owner AS (
+        SELECT id AS owner_id
+        FROM users
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      )
+      SELECT
+        u.id AS user_id,
+        u.email,
+        COALESCE(u.display_name, u.email) AS display_name,
+        CASE
+          WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner'
+          ELSE 'member'
+        END AS role,
+        COALESCE(c.initial_password, '') AS initial_password,
+        p.detected_at,
+        p.email_id,
+        p.detected_subject,
+        p.detected_sender,
+        p.recipient,
+        COALESCE(p.status, 'detected') AS status,
+        COALESCE(p.confirmed_at, '') AS confirmed_at,
+        COALESCE(p.confirmation_email_id, '') AS confirmation_email_id,
+        COALESCE(p.magic_link_at, '') AS magic_link_at,
+        COALESCE(p.magic_link_email_id, '') AS magic_link_email_id
+      FROM pioneer_ai_claims p
+      INNER JOIN users u
+        ON u.id = p.user_id
+      LEFT JOIN user_initial_credentials c
+        ON c.user_id = u.id
+      WHERE u.password_hash IS NOT NULL
+      LIMIT 1000
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    return (response.results ?? [])
+      .map((row) => mapPioneerAiClaimRow(row))
+      .sort(sortPioneerAiClaimsByDateDesc)
+      .slice(0, 250);
+  } catch (error) {
+    if (isMissingOptionalTableError(error, 'pioneer_ai_claims') || isMissingOptionalTableError(error, 'user_initial_credentials')) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function mapPioneerAiClaimRow(row: Record<string, unknown>): PioneerAiClaimDto {
+  const status = normalizePioneerAiStatus(String(row.status ?? ''));
+  return {
+    userId: String(row.user_id ?? ''),
+    email: String(row.email ?? ''),
+    displayName: String(row.display_name ?? ''),
+    role: String(row.role ?? 'member'),
+    initialPassword: String(row.initial_password ?? ''),
+    detectedAt: String(row.detected_at ?? ''),
+    emailId: String(row.email_id ?? ''),
+    detectedSubject: String(row.detected_subject ?? ''),
+    detectedSender: String(row.detected_sender ?? ''),
+    recipient: String(row.recipient ?? ''),
+    status,
+    confirmedAt: String(row.confirmed_at ?? ''),
+    confirmationEmailId: String(row.confirmation_email_id ?? ''),
+    magicLinkAt: String(row.magic_link_at ?? ''),
+    magicLinkEmailId: String(row.magic_link_email_id ?? '')
+  };
+}
+
+function normalizePioneerAiStatus(value: string): PioneerAiClaimDto['status'] {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'magic_link') {
+    return 'magic_link';
+  }
+  if (normalized === 'confirmed') {
+    return 'confirmed';
+  }
+  return 'detected';
+}
+
+function sortPioneerAiClaimsByDateDesc(a: PioneerAiClaimDto, b: PioneerAiClaimDto): number {
+  const dateDiff = getStoredDateTime(getPioneerAiSortDate(b)) - getStoredDateTime(getPioneerAiSortDate(a));
+  if (dateDiff !== 0) {
+    return dateDiff;
+  }
+  return a.email.localeCompare(b.email);
+}
+
+function getPioneerAiSortDate(claim: PioneerAiClaimDto): string {
+  return claim.magicLinkAt || claim.confirmedAt || claim.detectedAt;
 }
 
 function getStoredDateTime(value: string): number {
