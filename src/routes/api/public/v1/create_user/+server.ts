@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { authenticatePublicApiRequest } from '$lib/server/api-key';
-import { createUniqueEmailAliasInDb, createUserInDb } from '$lib/server/db';
+import { createUniqueEmailAliasInDb, createUserInDb, softDeleteUserInDb } from '$lib/server/db';
 import { generateSecurePassword, hashPassword } from '$lib/server/security';
 import { sendUserCreatedTelegramNotification } from '$lib/server/telegram';
 import { ensureEmailRoutingRuleForUser } from '$lib/server/cloudflare-email-routing';
@@ -97,6 +97,11 @@ export const POST: RequestHandler = async ({ platform, request }) => {
           ruleId: '',
           message: error instanceof Error ? error.message : String(error)
         }));
+
+    if (!routing.ok || routing.skipped) {
+      await softDeleteUserInDb(db, user.id).catch(() => undefined);
+      return publicError(502, 'SERVICE_UNAVAILABLE', `Gagal menyiapkan Email Routing Cloudflare: ${routing.message}`);
+    }
 
     await sendUserCreatedTelegramNotification(db, platform?.env, {
       username: usernameRaw,

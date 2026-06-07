@@ -37,6 +37,13 @@ interface CloudflareApiResponse<T> {
   success: boolean;
   errors?: Array<{ code?: number; message?: string }>;
   result?: T;
+  result_info?: {
+    page?: number;
+    per_page?: number;
+    count?: number;
+    total_count?: number;
+    total_pages?: number;
+  };
 }
 
 interface EmailRoutingRule {
@@ -351,15 +358,47 @@ async function findExistingRules(
 }
 
 async function listRoutingRules(token: string, zoneId: string): Promise<EmailRoutingRule[]> {
-  const response = await fetch(`${CLOUDFLARE_API_BASE}/zones/${zoneId}/email/routing/rules?per_page=1000`, {
-    headers: buildHeaders(token)
-  });
-  const payload = (await response.json().catch(() => null)) as CloudflareApiResponse<EmailRoutingRule[]> | null;
-  if (!response.ok || !payload?.success) {
-    throw new Error(formatCloudflareError('Gagal memuat daftar aturan Email Routing', payload));
+  const perPage = 50;
+  const rules: EmailRoutingRule[] = [];
+  let page = 1;
+  let totalPages = 1;
+
+  while (page <= totalPages) {
+    const response = await fetch(
+      `${CLOUDFLARE_API_BASE}/zones/${zoneId}/email/routing/rules?per_page=${perPage}&page=${page}`,
+      {
+        headers: buildHeaders(token)
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as CloudflareApiResponse<EmailRoutingRule[]> | null;
+    if (!response.ok || !payload?.success) {
+      throw new Error(formatCloudflareError('Gagal memuat daftar aturan Email Routing', payload));
+    }
+
+    rules.push(...(payload.result ?? []));
+    totalPages = getTotalRoutingRulePages(payload.result_info, perPage);
+    page += 1;
   }
 
-  return payload.result ?? [];
+  return rules;
+}
+
+function getTotalRoutingRulePages(
+  resultInfo: CloudflareApiResponse<EmailRoutingRule[]>['result_info'],
+  fallbackPerPage: number
+): number {
+  const explicitTotalPages = Number(resultInfo?.total_pages ?? 0);
+  if (explicitTotalPages > 0) {
+    return explicitTotalPages;
+  }
+
+  const totalCount = Number(resultInfo?.total_count ?? 0);
+  const perPage = Number(resultInfo?.per_page ?? fallbackPerPage);
+  if (totalCount > 0 && perPage > 0) {
+    return Math.max(1, Math.ceil(totalCount / perPage));
+  }
+
+  return 1;
 }
 
 function findRuleInList(rules: EmailRoutingRule[], email: string, workerName: string): EmailRoutingRule | null {
