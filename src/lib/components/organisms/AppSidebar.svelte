@@ -14,6 +14,7 @@
     | 'gpt-plus'
     | 'kiro-github'
     | 'pioneer-ai'
+    | 'netflix'
     | 'dot-aliases'
     | 'worker' = 'dashboard';
 
@@ -99,6 +100,7 @@
     <SidebarNavItem href="/gpt-plus" icon="workspace_premium" label={$t('nav.gptPlus')} active={active === 'gpt-plus'} compact={compact} />
     <SidebarNavItem href="/kiro-github" icon="code_blocks" label={$t('nav.kiroGithub')} active={active === 'kiro-github'} compact={compact} />
     <SidebarNavItem href="/pioneer-ai" icon="auto_awesome" label={$t('nav.pioneerAi')} active={active === 'pioneer-ai'} compact={compact} />
+    <SidebarNavItem href="/netflix" icon="movie" label={$t('nav.netflix')} active={active === 'netflix'} compact={compact} />
     <SidebarNavItem href="/dot-aliases" icon="alternate_email" label={$t('nav.dotAliases')} active={active === 'dot-aliases'} compact={compact} />
     <SidebarNavItem href="/worker/settings" icon="settings_input_component" label={$t('nav.worker')} active={active === 'worker'} compact={compact} />
   </nav>

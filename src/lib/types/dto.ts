@@ -182,6 +182,24 @@ export interface PioneerAiClaimDto {
   magicLinkEmailId: string;
 }
 
+export interface NetflixClaimDto {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: string;
+  initialPassword: string;
+  detectedAt: string;
+  emailId: string;
+  detectedSubject: string;
+  detectedSender: string;
+  recipient: string;
+  status: 'joined' | 'detected';
+  planName: string;
+  serviceProvider: string;
+  trialEndsAt: string;
+  nextBillingAt: string;
+}
+
 export interface DotAliasUsageDto {
   email: string;
   used: boolean;

@@ -7,6 +7,7 @@ import type {
   EmailDto,
   GptPlusClaimDto,
   KiroGithubClaimDto,
+  NetflixClaimDto,
   PioneerAiClaimDto,
   UserDto
 } from '$lib/types/dto';
@@ -16,9 +17,11 @@ import PostalMime from 'postal-mime';
 const GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS = 60_000;
 const KIRO_GITHUB_BACKFILL_INTERVAL_MS = 60_000;
 const PIONEER_AI_BACKFILL_INTERVAL_MS = 60_000;
+const NETFLIX_BACKFILL_INTERVAL_MS = 60_000;
 let lastGptPlusDeactivationBackfillAt = 0;
 let lastKiroGithubBackfillAt = 0;
 let lastPioneerAiBackfillAt = 0;
+let lastNetflixBackfillAt = 0;
 
 interface CreateUserInput {
   email: string;
@@ -826,6 +829,20 @@ export async function upsertInboundEmailInDb(
   });
 
   await detectAndStorePioneerAiClaim(db, {
+    userId,
+    emailId,
+    sender,
+    recipient,
+    subject,
+    snippet,
+    bodyText,
+    bodyHtml: parsedHtml,
+    parsedSubject: subject,
+    parsedSender: fromMailbox.email || sender,
+    receivedAt
+  });
+
+  await detectAndStoreNetflixClaim(db, {
     userId,
     emailId,
     sender,
@@ -1986,6 +2003,86 @@ async function detectAndStorePioneerAiClaim(db: D1Database, input: DetectGptPlus
   }
 }
 
+async function detectAndStoreNetflixClaim(db: D1Database, input: DetectGptPlusClaimInput): Promise<void> {
+  const subject = (input.parsedSubject || input.subject || '').trim();
+  const sender = (input.parsedSender || input.sender || '').trim();
+  const recipient = input.recipient.trim().toLowerCase();
+  const rawText = buildNetflixRawText(input);
+  const searchText = normalizeSearchText(rawText);
+  if (!isNetflixAccountEmail(subject, sender, searchText)) {
+    return;
+  }
+
+  const detectedAt = input.receivedAt || new Date().toISOString();
+  const status = getNetflixEmailStatus(subject, searchText);
+
+  try {
+    await db
+      .prepare(
+        `
+      INSERT INTO netflix_claims (
+        user_id,
+        email_id,
+        detected_at,
+        detected_subject,
+        detected_sender,
+        recipient,
+        status,
+        plan_name,
+        service_provider,
+        trial_ends_at,
+        next_billing_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        email_id = excluded.email_id,
+        detected_at = excluded.detected_at,
+        detected_subject = excluded.detected_subject,
+        detected_sender = excluded.detected_sender,
+        recipient = excluded.recipient,
+        status = CASE
+          WHEN excluded.status = 'joined' OR netflix_claims.status = 'joined' THEN 'joined'
+          ELSE 'detected'
+        END,
+        plan_name = CASE
+          WHEN excluded.plan_name != '' THEN excluded.plan_name
+          ELSE netflix_claims.plan_name
+        END,
+        service_provider = CASE
+          WHEN excluded.service_provider != '' THEN excluded.service_provider
+          ELSE netflix_claims.service_provider
+        END,
+        trial_ends_at = CASE
+          WHEN excluded.trial_ends_at != '' THEN excluded.trial_ends_at
+          ELSE netflix_claims.trial_ends_at
+        END,
+        next_billing_at = CASE
+          WHEN excluded.next_billing_at != '' THEN excluded.next_billing_at
+          ELSE netflix_claims.next_billing_at
+        END
+    `
+      )
+      .bind(
+        input.userId,
+        input.emailId,
+        detectedAt,
+        subject.slice(0, 998),
+        sender.slice(0, 320),
+        recipient.slice(0, 320),
+        status,
+        extractNetflixPlanName(rawText).slice(0, 120),
+        extractNetflixServiceProvider(rawText).slice(0, 190),
+        extractNetflixTrialEndsAt(rawText),
+        extractNetflixNextBillingAt(rawText)
+      )
+      .run();
+  } catch (error) {
+    if (!isMissingOptionalTableError(error, 'netflix_claims')) {
+      throw error;
+    }
+  }
+}
+
 async function backfillRecentGptPlusDeactivationsFromDb(db: D1Database): Promise<void> {
   const now = Date.now();
   if (now - lastGptPlusDeactivationBackfillAt < GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS) {
@@ -2184,6 +2281,74 @@ async function backfillRecentPioneerAiClaimsFromDb(db: D1Database): Promise<void
       };
       if (input.userId && input.emailId) {
         await detectAndStorePioneerAiClaim(db, input);
+      }
+    }
+  } catch {
+    // This is opportunistic. A failed backfill should never block the page.
+  }
+}
+
+async function backfillRecentNetflixClaimsFromDb(db: D1Database): Promise<void> {
+  const now = Date.now();
+  if (now - lastNetflixBackfillAt < NETFLIX_BACKFILL_INTERVAL_MS) {
+    return;
+  }
+  lastNetflixBackfillAt = now;
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      SELECT
+        id,
+        user_id,
+        sender,
+        recipient,
+        COALESCE(subject, parsed_subject, '') AS subject,
+        COALESCE(snippet, '') AS snippet,
+        COALESCE(parsed_text, body_text, '') AS body_text,
+        COALESCE(parsed_html, body_html, '') AS body_html,
+        received_at
+      FROM emails
+      WHERE deleted_at IS NULL
+        AND (
+          lower(sender) LIKE '%netflix%'
+          OR lower(COALESCE(parsed_from_email, '')) LIKE '%netflix%'
+          OR lower(COALESCE(parsed_sender, '')) LIKE '%netflix%'
+          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%netflix%'
+          OR lower(COALESCE(body_text, '')) LIKE '%netflix%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%netflix%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%netflix%'
+        )
+        AND (
+          lower(COALESCE(subject, parsed_subject, '')) LIKE '%welcome to netflix%'
+          OR lower(COALESCE(body_text, '')) LIKE '%thanks for joining netflix%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%thanks for joining netflix%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%thanks for joining netflix%'
+          OR lower(COALESCE(body_text, '')) LIKE '%your account information%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%your account information%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%your account information%'
+        )
+      ORDER BY received_at DESC
+      LIMIT 250
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    for (const row of response.results ?? []) {
+      const input = {
+        userId: String(row.user_id ?? ''),
+        emailId: String(row.id ?? ''),
+        sender: String(row.sender ?? ''),
+        recipient: String(row.recipient ?? ''),
+        subject: String(row.subject ?? ''),
+        snippet: String(row.snippet ?? ''),
+        bodyText: String(row.body_text ?? ''),
+        bodyHtml: String(row.body_html ?? ''),
+        receivedAt: String(row.received_at ?? '')
+      };
+      if (input.userId && input.emailId) {
+        await detectAndStoreNetflixClaim(db, input);
       }
     }
   } catch {
@@ -2402,6 +2567,27 @@ function isPioneerAiAccountEmail(subject: string, sender: string, searchText: st
   return pioneerRelated && (looksAccountConfirmation || looksMagicLink);
 }
 
+function isNetflixAccountEmail(subject: string, sender: string, searchText: string): boolean {
+  const normalizedSubject = subject.toLowerCase();
+  const normalizedSender = sender.toLowerCase();
+  const netflixRelated =
+    normalizedSender.includes('netflix') ||
+    normalizedSubject.includes('netflix') ||
+    searchText.includes('netflix') ||
+    searchText.includes('netflix pte. ltd');
+  const looksWelcome =
+    normalizedSubject.includes('welcome to netflix') ||
+    searchText.includes('thanks for joining netflix') ||
+    searchText.includes('welcome to netflix');
+  const looksAccountInfo =
+    searchText.includes('your account information') ||
+    searchText.includes('service provider') ||
+    searchText.includes('plan (with offer)') ||
+    searchText.includes('start watching');
+
+  return netflixRelated && (looksWelcome || looksAccountInfo);
+}
+
 function getPioneerAiEmailStatus(subject: string, searchText: string): PioneerAiClaimDto['status'] {
   const normalizedSubject = subject.toLowerCase();
   if (
@@ -2413,6 +2599,14 @@ function getPioneerAiEmailStatus(subject: string, searchText: string): PioneerAi
   }
   if (normalizedSubject.includes('confirm your pioneer account') || searchText.includes('confirm your pioneer account')) {
     return 'confirmed';
+  }
+  return 'detected';
+}
+
+function getNetflixEmailStatus(subject: string, searchText: string): NetflixClaimDto['status'] {
+  const normalizedSubject = subject.toLowerCase();
+  if (normalizedSubject.includes('welcome to netflix') || searchText.includes('thanks for joining netflix')) {
+    return 'joined';
   }
   return 'detected';
 }
@@ -2445,6 +2639,10 @@ function buildPioneerAiRawText(input: DetectGptPlusClaimInput): string {
   return buildKiroGithubRawText(input);
 }
 
+function buildNetflixRawText(input: DetectGptPlusClaimInput): string {
+  return buildKiroGithubRawText(input);
+}
+
 function normalizeSearchText(value: string): string {
   return value
     .replace(/&nbsp;/gi, ' ')
@@ -2473,6 +2671,65 @@ function extractFirstGithubUrl(rawText: string, pathPart: string): string {
   const escapedPath = pathPart.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = rawText.match(new RegExp(`https://github\\.com${escapedPath}[^\\s<>"']*`, 'i'));
   return match?.[0] ?? '';
+}
+
+function extractNetflixPlanName(rawText: string): string {
+  const normalized = htmlToPlainText(rawText).replace(/\r/g, '\n');
+  const explicitMatch = normalized.match(/Plan\s*(?:\(with offer\))?\s*[\n: -]+([A-Za-z][A-Za-z0-9 .+-]{1,80})/i);
+  const explicitValue = explicitMatch?.[1]?.split(/\n|IDR|then|starting/i)[0]?.trim();
+  if (explicitValue) {
+    return explicitValue;
+  }
+
+  const searchText = normalizeSearchText(normalized);
+  if (searchText.includes('premium')) {
+    return 'Premium';
+  }
+  if (searchText.includes('standard')) {
+    return 'Standard';
+  }
+  if (searchText.includes('basic')) {
+    return 'Basic';
+  }
+  return '';
+}
+
+function extractNetflixServiceProvider(rawText: string): string {
+  const normalized = htmlToPlainText(rawText).replace(/\s+/g, ' ').trim();
+  const match = normalized.match(/Service Provider\s*[: -]+(.+?)(?:\s+Plan\s*(?:\(with offer\))?|\s+Payment|\s*$)/i);
+  return match?.[1]?.trim() ?? '';
+}
+
+function extractNetflixTrialEndsAt(rawText: string): string {
+  return extractNetflixDate(rawText, [
+    /trial ends?(?:\s+on)?\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})/i,
+    /before your trial ends?\s*(?:on)?\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})/i
+  ]);
+}
+
+function extractNetflixNextBillingAt(rawText: string): string {
+  return extractNetflixDate(rawText, [
+    /starting\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})/i,
+    /billing date\s*[\n: -]+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})/i,
+    /next billing(?: date)?\s*[\n: -]+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})/i
+  ]);
+}
+
+function extractNetflixDate(rawText: string, patterns: RegExp[]): string {
+  const normalized = htmlToPlainText(rawText).replace(/\s+/g, ' ');
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const value = match?.[1]?.trim();
+    if (!value) {
+      continue;
+    }
+
+    const date = new Date(`${value} UTC`);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+  }
+  return '';
 }
 
 export async function getGptPlusClaimsFromDb(db: D1Database | undefined): Promise<GptPlusClaimDto[]> {
@@ -2795,6 +3052,102 @@ function sortPioneerAiClaimsByDateDesc(a: PioneerAiClaimDto, b: PioneerAiClaimDt
 
 function getPioneerAiSortDate(claim: PioneerAiClaimDto): string {
   return claim.magicLinkAt || claim.confirmedAt || claim.detectedAt;
+}
+
+export async function getNetflixClaimsFromDb(db: D1Database | undefined): Promise<NetflixClaimDto[]> {
+  if (!db) {
+    return [];
+  }
+
+  await backfillRecentNetflixClaimsFromDb(db);
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      WITH owner AS (
+        SELECT id AS owner_id
+        FROM users
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      )
+      SELECT
+        u.id AS user_id,
+        u.email,
+        COALESCE(u.display_name, u.email) AS display_name,
+        CASE
+          WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner'
+          ELSE 'member'
+        END AS role,
+        COALESCE(c.initial_password, '') AS initial_password,
+        n.detected_at,
+        n.email_id,
+        n.detected_subject,
+        n.detected_sender,
+        n.recipient,
+        COALESCE(n.status, 'detected') AS status,
+        COALESCE(n.plan_name, '') AS plan_name,
+        COALESCE(n.service_provider, '') AS service_provider,
+        COALESCE(n.trial_ends_at, '') AS trial_ends_at,
+        COALESCE(n.next_billing_at, '') AS next_billing_at
+      FROM netflix_claims n
+      INNER JOIN users u
+        ON u.id = n.user_id
+      LEFT JOIN user_initial_credentials c
+        ON c.user_id = u.id
+      WHERE u.password_hash IS NOT NULL
+      LIMIT 1000
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    return (response.results ?? [])
+      .map((row) => mapNetflixClaimRow(row))
+      .sort(sortNetflixClaimsByDateDesc)
+      .slice(0, 250);
+  } catch (error) {
+    if (isMissingOptionalTableError(error, 'netflix_claims') || isMissingOptionalTableError(error, 'user_initial_credentials')) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function mapNetflixClaimRow(row: Record<string, unknown>): NetflixClaimDto {
+  const status = normalizeNetflixStatus(String(row.status ?? ''));
+  return {
+    userId: String(row.user_id ?? ''),
+    email: String(row.email ?? ''),
+    displayName: String(row.display_name ?? ''),
+    role: String(row.role ?? 'member'),
+    initialPassword: String(row.initial_password ?? ''),
+    detectedAt: String(row.detected_at ?? ''),
+    emailId: String(row.email_id ?? ''),
+    detectedSubject: String(row.detected_subject ?? ''),
+    detectedSender: String(row.detected_sender ?? ''),
+    recipient: String(row.recipient ?? ''),
+    status,
+    planName: String(row.plan_name ?? ''),
+    serviceProvider: String(row.service_provider ?? ''),
+    trialEndsAt: String(row.trial_ends_at ?? ''),
+    nextBillingAt: String(row.next_billing_at ?? '')
+  };
+}
+
+function normalizeNetflixStatus(value: string): NetflixClaimDto['status'] {
+  return value.trim().toLowerCase() === 'joined' ? 'joined' : 'detected';
+}
+
+function sortNetflixClaimsByDateDesc(a: NetflixClaimDto, b: NetflixClaimDto): number {
+  const dateDiff = getStoredDateTime(getNetflixSortDate(b)) - getStoredDateTime(getNetflixSortDate(a));
+  if (dateDiff !== 0) {
+    return dateDiff;
+  }
+  return a.email.localeCompare(b.email);
+}
+
+function getNetflixSortDate(claim: NetflixClaimDto): string {
+  return claim.nextBillingAt || claim.trialEndsAt || claim.detectedAt;
 }
 
 function getStoredDateTime(value: string): number {

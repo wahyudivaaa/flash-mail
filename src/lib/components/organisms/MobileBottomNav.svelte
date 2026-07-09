@@ -11,6 +11,7 @@
     { key: 'gpt-plus', href: '/gpt-plus', labelKey: 'nav.gptPlus', icon: 'workspace_premium' },
     { key: 'kiro-github', href: '/kiro-github', labelKey: 'nav.kiroGithubShort', icon: 'code_blocks' },
     { key: 'pioneer-ai', href: '/pioneer-ai', labelKey: 'nav.pioneerAiShort', icon: 'auto_awesome' },
+    { key: 'netflix', href: '/netflix', labelKey: 'nav.netflixShort', icon: 'movie' },
     { key: 'dot-aliases', href: '/dot-aliases', labelKey: 'nav.dotAliasesShort', icon: 'alternate_email' },
     { key: 'worker', href: '/worker/settings', labelKey: 'nav.worker', icon: 'settings_input_component' }
   ] as const;
@@ -24,6 +25,7 @@
   function resolveActiveKey(path: string): (typeof items)[number]['key'] | '' {
     if (path.startsWith('/worker')) return 'worker';
     if (path.startsWith('/dot-aliases')) return 'dot-aliases';
+    if (path.startsWith('/netflix')) return 'netflix';
     if (path.startsWith('/pioneer-ai')) return 'pioneer-ai';
     if (path.startsWith('/kiro-github')) return 'kiro-github';
     if (path.startsWith('/gpt-plus')) return 'gpt-plus';
@@ -73,7 +75,7 @@
     bottom: 0;
     z-index: 20;
     display: none;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
+    grid-template-columns: repeat(9, minmax(0, 1fr));
     gap: 0.25rem;
     min-height: var(--mobile-nav-height);
     padding: 0.45rem 0.42rem calc(0.45rem + env(safe-area-inset-bottom));
