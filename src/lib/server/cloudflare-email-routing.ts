@@ -1,5 +1,5 @@
 import { resolveCloudflareWorkerName } from '$lib/server/cloudflare-domain-setup';
-import { getZoneIdForEmailDomain, type MailDomainsEnv } from '$lib/server/mail-domains';
+import { getZoneIdForEmailDomain, getMailDomains, type MailDomainsEnv } from '$lib/server/mail-domains';
 import { APP_BRAND_NAME } from '$lib/config/brand';
 import { getExternalMailRoutingMessage, isExternalMailDomain } from '$lib/server/external-mail-providers';
 
@@ -74,10 +74,17 @@ export async function ensureEmailRoutingRuleForUser(
   }
 
   const zoneId =
-    (await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, normalizedEmail)) || env?.CLOUDFLARE_ZONE_ID?.trim() || '';
+    (await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, normalizedEmail)) ||
+    env?.CLOUDFLARE_ZONE_ID?.trim() ||
+    '';
+  const validZoneId = isCloudflareZoneId(zoneId)
+    ? zoneId
+    : token
+      ? await resolveZoneIdByDomainName(token, env?.CLOUDFLARE_ACCOUNT_ID, domain)
+      : '';
   const workerName = resolveCloudflareWorkerName(env);
 
-  if (!token || !zoneId || !workerName) {
+  if (!token || !validZoneId || !workerName) {
     return {
       ok: false,
       skipped: true,
@@ -95,7 +102,28 @@ export async function ensureEmailRoutingRuleForUser(
     };
   }
 
-  const existing = await findExistingRule(token, zoneId, normalizedEmail, workerName);
+  // Prefer catch-all worker routing so brand-new mailboxes receive mail
+  // without waiting for per-address rule propagation / hitting rule limits.
+  try {
+    const catchAll = await ensureCatchAllEmailRoutingRule(env, domain, db);
+    if (catchAll.ok && catchAll.ruleId) {
+      return {
+        ok: true,
+        skipped: catchAll.skipped,
+        ruleId: catchAll.ruleId,
+        message: catchAll.message
+      };
+    }
+  } catch (error) {
+    // Fall back to per-address rule if catch-all API fails for this zone.
+    console.warn(
+      `[email-routing] catch-all failed for ${domain}, fallback per-address: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+
+  const existing = await findExistingRule(token, validZoneId, normalizedEmail, workerName);
   if (existing) {
     return {
       ok: true,
@@ -105,12 +133,139 @@ export async function ensureEmailRoutingRuleForUser(
     };
   }
 
-  const created = await createRoutingRule(token, zoneId, normalizedEmail, workerName);
+  const created = await createRoutingRule(token, validZoneId, normalizedEmail, workerName);
   return {
     ok: true,
     skipped: false,
     ruleId: created.id ?? '',
     message: 'Aturan Email Routing dibuat'
+  };
+}
+
+/**
+ * Ensure a catch-all Email Routing rule that sends ALL inbound mail for a
+ * domain to the Mail Flare worker. This is the reliable path for farming:
+ * create_user no longer depends on a fresh per-address rule being active
+ * within seconds of OTP send.
+ */
+export async function ensureCatchAllEmailRoutingRule(
+  env: CloudflareEmailRoutingEnv | undefined,
+  domainOrEmail: string,
+  db?: D1Database
+): Promise<EnsureEmailRoutingRuleResult> {
+  const token = env?.CLOUDFLARE_API_TOKEN?.trim() ?? '';
+  const raw = domainOrEmail.trim().toLowerCase();
+  const domain = raw.includes('@') ? raw.split('@')[1] ?? '' : raw.replace(/^@+/, '');
+  if (!domain) {
+    return { ok: false, skipped: true, ruleId: '', message: 'Domain routing tidak valid' };
+  }
+  if (isExternalMailDomain(domain)) {
+    return {
+      ok: true,
+      skipped: true,
+      ruleId: '',
+      message: getExternalMailRoutingMessage(domain)
+    };
+  }
+
+  let zoneId =
+    (await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, domain)) ||
+    env?.CLOUDFLARE_ZONE_ID?.trim() ||
+    '';
+  // Zone id must be a UUID. If mail_domains has garbage/empty, resolve via CF API by domain name.
+  if (!isCloudflareZoneId(zoneId)) {
+    zoneId = '';
+  }
+  if (!zoneId && token) {
+    zoneId = await resolveZoneIdByDomainName(token, env?.CLOUDFLARE_ACCOUNT_ID, domain);
+  }
+  const workerName = resolveCloudflareWorkerName(env);
+  if (!token || !zoneId || !workerName) {
+    return {
+      ok: false,
+      skipped: true,
+      ruleId: '',
+      message: !token
+        ? 'API Email Routing Cloudflare belum dikonfigurasi'
+        : !zoneId
+          ? `Zone Cloudflare tidak ditemukan untuk domain ${domain}`
+          : 'Worker Email Routing belum dikonfigurasi'
+    };
+  }
+
+  // Check dedicated catch_all resource first (authoritative).
+  try {
+    const catchAllResponse = await fetch(
+      `${CLOUDFLARE_API_BASE}/zones/${zoneId}/email/routing/rules/catch_all`,
+      { headers: buildHeaders(token) }
+    );
+    const catchAllPayload = (await catchAllResponse.json().catch(() => null)) as CloudflareApiResponse<EmailRoutingRule> | null;
+    const existingDedicated = catchAllPayload?.result;
+    const dedicatedWorker = existingDedicated?.actions?.some(
+      (action) => action.type === 'worker' && action.value?.includes(workerName)
+    );
+    if (catchAllResponse.ok && catchAllPayload?.success && existingDedicated?.enabled !== false && dedicatedWorker) {
+      return {
+        ok: true,
+        skipped: false,
+        ruleId: existingDedicated.id ?? 'catch_all',
+        message: `Catch-all Email Routing ke worker sudah aktif untuk ${domain}`
+      };
+    }
+  } catch {
+    // fall through to create/update
+  }
+
+  const created = await createCatchAllRoutingRule(token, zoneId, domain, workerName);
+  return {
+    ok: true,
+    skipped: false,
+    ruleId: created.id ?? 'catch_all',
+    message: `Catch-all Email Routing dibuat untuk ${domain} → ${workerName}`
+  };
+}
+
+export async function ensureCatchAllEmailRoutingForManagedDomains(
+  env: CloudflareEmailRoutingEnv | undefined,
+  db?: D1Database
+): Promise<{
+  ok: boolean;
+  results: Array<{ domain: string; ok: boolean; ruleId: string; message: string }>;
+  message: string;
+}> {
+  const domains = await getMailDomains(db, env as MailDomainsEnv | undefined);
+  const managed = domains
+    .map((entry) => entry.domain)
+    .filter((domain) => domain && !isExternalMailDomain(domain));
+  const results: Array<{ domain: string; ok: boolean; ruleId: string; message: string }> = [];
+
+  for (const domain of managed) {
+    try {
+      const result = await ensureCatchAllEmailRoutingRule(env, domain, db);
+      results.push({
+        domain,
+        ok: result.ok,
+        ruleId: result.ruleId,
+        message: result.message
+      });
+    } catch (error) {
+      results.push({
+        domain,
+        ok: false,
+        ruleId: '',
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  const failed = results.filter((row) => !row.ok);
+  return {
+    ok: failed.length === 0,
+    results,
+    message:
+      failed.length === 0
+        ? `Catch-all siap untuk ${results.length} domain`
+        : `Catch-all gagal di ${failed.length}/${results.length} domain`
   };
 }
 
@@ -493,6 +648,85 @@ async function createRoutingRule(token: string, zoneId: string, email: string, w
     throw new Error(formatCloudflareError('Gagal membuat aturan Email Routing', payload));
   }
   return payload.result;
+}
+
+async function createCatchAllRoutingRule(
+  token: string,
+  zoneId: string,
+  domain: string,
+  workerName: string
+): Promise<EmailRoutingRule> {
+  // Catch-all is a special resource — not a normal routing rule.
+  // GET/PUT: /zones/{zone_id}/email/routing/rules/catch_all
+  // Creating with matchers type=all on /rules returns "Invalid rule operation".
+  const catchAllUrl = `${CLOUDFLARE_API_BASE}/zones/${zoneId}/email/routing/rules/catch_all`;
+  const getResponse = await fetch(catchAllUrl, {
+    headers: buildHeaders(token)
+  });
+  const getPayload = (await getResponse.json().catch(() => null)) as CloudflareApiResponse<EmailRoutingRule> | null;
+  if (getResponse.ok && getPayload?.success && getPayload.result) {
+    const existing = getPayload.result;
+    const sendsToWorker = existing.actions?.some(
+      (action) => action.type === 'worker' && action.value?.includes(workerName)
+    );
+    if (existing.enabled !== false && sendsToWorker) {
+      return existing;
+    }
+  }
+
+  const response = await fetch(catchAllUrl, {
+    method: 'PUT',
+    headers: buildHeaders(token),
+    body: JSON.stringify({
+      name: `${APP_BRAND_NAME} catch-all ${domain}`,
+      enabled: true,
+      matchers: [
+        {
+          type: 'all'
+        }
+      ],
+      actions: [
+        {
+          type: 'worker',
+          value: [workerName]
+        }
+      ]
+    })
+  });
+  const payload = (await response.json().catch(() => null)) as CloudflareApiResponse<EmailRoutingRule> | null;
+  if (!response.ok || !payload?.success || !payload.result) {
+    throw new Error(formatCloudflareError(`Gagal membuat catch-all Email Routing untuk ${domain}`, payload));
+  }
+  return payload.result;
+}
+
+function isCloudflareZoneId(value: string): boolean {
+  return /^[0-9a-f]{32}$/i.test(String(value || '').trim());
+}
+
+async function resolveZoneIdByDomainName(
+  token: string,
+  accountId: string | undefined,
+  domain: string
+): Promise<string> {
+  const query = new URLSearchParams({
+    name: domain,
+    per_page: '20'
+  });
+  if (accountId?.trim()) {
+    query.set('account.id', accountId.trim());
+  }
+  const response = await fetch(`${CLOUDFLARE_API_BASE}/zones?${query.toString()}`, {
+    headers: buildHeaders(token)
+  });
+  const payload = (await response.json().catch(() => null)) as CloudflareApiResponse<Array<{ id?: string; name?: string }>> | null;
+  if (!response.ok || !payload?.success) {
+    return '';
+  }
+  const match = (payload.result ?? []).find(
+    (zone) => String(zone.name ?? '').trim().toLowerCase() === domain.toLowerCase()
+  );
+  return String(match?.id ?? '').trim();
 }
 
 async function deleteRoutingRule(token: string, zoneId: string, ruleId: string): Promise<void> {

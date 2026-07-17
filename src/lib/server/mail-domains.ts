@@ -139,7 +139,9 @@ export async function getZoneIdForEmailDomain(
   env: MailDomainsEnv | undefined,
   emailOrDomain: string
 ): Promise<string> {
-  const normalizedEmailOrDomain = sanitizeDomain(emailOrDomain.includes('@') ? emailOrDomain.split('@')[1] ?? '' : emailOrDomain);
+  const normalizedEmailOrDomain = sanitizeDomain(
+    emailOrDomain.includes('@') ? emailOrDomain.split('@')[1] ?? '' : emailOrDomain
+  );
   if (!normalizedEmailOrDomain) {
     return '';
   }
@@ -149,6 +151,22 @@ export async function getZoneIdForEmailDomain(
     return configured.zoneId;
   }
 
+  // MAILFLARE_USER_DOMAIN may be a single domain OR comma-separated list.
+  const envDomains = String(env?.MAILFLARE_USER_DOMAIN ?? '')
+    .split(',')
+    .map((part) => sanitizeDomain(part))
+    .filter(Boolean);
+  const primaryEnvDomain = envDomains[0] ?? '';
+  if (normalizedEmailOrDomain === primaryEnvDomain || envDomains.includes(normalizedEmailOrDomain)) {
+    // Only the primary/default zone id is available from env; other domains should
+    // store their own zoneId in mail_domains config. Still return primary zone for
+    // the primary domain.
+    if (normalizedEmailOrDomain === primaryEnvDomain) {
+      return String(env?.CLOUDFLARE_ZONE_ID ?? '').trim();
+    }
+  }
+
+  // Last-resort fallback for the historical single-domain env var match.
   const envDomain = sanitizeDomain(env?.MAILFLARE_USER_DOMAIN ?? '');
   if (normalizedEmailOrDomain === envDomain) {
     return String(env?.CLOUDFLARE_ZONE_ID ?? '').trim();

@@ -11,6 +11,7 @@ Menyediakan akses machine-to-machine berbasis API key untuk operasi:
 2. `list_user`
 3. `user_mailbox`
 4. `read_email` (alias kompatibilitas: `read_emai`)
+5. `delete_user` (soft-delete mailbox)
 
 Batasan utama:
 
@@ -27,6 +28,7 @@ Yang termasuk:
 - Validasi API key untuk seluruh endpoint `/api/public/v1/*`.
 - Endpoint public:
   - `POST /api/public/v1/create_user`
+  - `POST /api/public/v1/delete_user` (juga menerima `DELETE`)
   - `GET /api/public/v1/domains`
   - `GET /api/public/v1/list_user`
   - `GET /api/public/v1/user_mailbox`
@@ -143,6 +145,46 @@ Response sukses (`201`):
 }
 ```
 
+### 5.1b `POST /api/public/v1/delete_user`
+
+Soft-delete mailbox user (mirror admin DELETE `/api/users/[userId]`):
+
+- hapus CF email routing rules untuk alamat tsb
+- soft-delete user (`password_hash=NULL`, tombstone email)
+- idempotent: `not_found` / `already_deleted` tetap `ok=true`
+
+Request body (salah satu):
+
+```json
+{ "email": "john@example.com" }
+```
+
+```json
+{ "username": "john", "domain": "example.com" }
+```
+
+Response sukses (`200`):
+
+```json
+{
+  "ok": true,
+  "data": {
+    "email": "john@example.com",
+    "userId": "uuid",
+    "deleted": true,
+    "alreadyDeleted": false,
+    "routing": {
+      "ok": true,
+      "skipped": false,
+      "deletedRuleIds": ["..."],
+      "message": "..."
+    }
+  }
+}
+```
+
+Method alternatif: `DELETE /api/public/v1/delete_user` (body sama).
+
 ### 5.2 `GET /api/public/v1/domains`
 
 Endpoint ini dipakai aplikasi eksternal untuk tombol refresh domain/dropdown layanan API.
@@ -175,6 +217,7 @@ Response sukses (`200`):
     ],
     "endpoints": {
       "createUser": "https://mail.example.com/api/public/v1/create_user",
+      "deleteUser": "https://mail.example.com/api/public/v1/delete_user",
       "listUser": "https://mail.example.com/api/public/v1/list_user",
       "userMailbox": "https://mail.example.com/api/public/v1/user_mailbox",
       "readEmail": "https://mail.example.com/api/public/v1/read_email",

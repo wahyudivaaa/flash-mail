@@ -49,10 +49,13 @@ export const GET: RequestHandler = async ({ platform, request }) => {
         }),
         endpoints: {
           createUser: `${apiBaseUrl}/create_user`,
+          deleteUser: `${apiBaseUrl}/delete_user`,
           listUser: `${apiBaseUrl}/list_user`,
           userMailbox: `${apiBaseUrl}/user_mailbox`,
           readEmail: `${apiBaseUrl}/read_email`,
-          domains: `${apiBaseUrl}/domains`
+          sendEmail: `${apiBaseUrl}/send_email`,
+          domains: `${apiBaseUrl}/domains`,
+          ensureRouting: `${apiBaseUrl}/ensure_routing`
         }
       }
     });

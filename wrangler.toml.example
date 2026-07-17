@@ -17,6 +17,12 @@ binding = "ASSETS"
 [vars]
 # Domain alamat inbox user (contoh: username@example.com)
 MAILFLARE_USER_DOMAIN = "<your-root-email-domain>"
+MAILFLARE_ALLOWED_SENDERS = "supportflashotp@flashdev.store"
+MAILFLARE_DEFAULT_FROM_EMAIL = "supportflashotp@flashdev.store"
+MAILFLARE_DEFAULT_FROM_NAME = "Flash OTP"
+MAILFLARE_ENABLE_CLOUDFLARE_BINDING = "false"
+MAILFLARE_ENABLE_CLOUDFLARE_REST = "false"
+MAILFLARE_ENABLE_MAILCHANNELS = "true"
 # Base URL UI/API aplikasi yang dipakai untuk notify internal
 MAILFLARE_NOTIFY_URL = "https://<app-domain>"
 # Cloudflare metadata untuk domain default. Token rahasia jangan ditulis di sini;

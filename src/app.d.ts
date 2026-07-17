@@ -10,7 +10,23 @@ declare global {
     interface Platform {
       env: {
         DB?: D1Database;
+        EMAIL?: {
+          send(message: {
+            to: string | string[];
+            from: string | { email?: string; address?: string; name?: string };
+            subject: string;
+            html?: string;
+            text?: string;
+          }): Promise<unknown>;
+        };
         MAILFLARE_USER_DOMAIN?: string;
+        MAILFLARE_ALLOWED_SENDERS?: string;
+        MAILFLARE_DEFAULT_FROM_EMAIL?: string;
+        MAILFLARE_DEFAULT_FROM_NAME?: string;
+        MAILFLARE_ENABLE_CLOUDFLARE_BINDING?: string;
+        MAILFLARE_ENABLE_CLOUDFLARE_REST?: string;
+        MAILFLARE_ENABLE_MAILCHANNELS?: string;
+        MAILCHANNELS_API_KEY?: string;
         TELEGRAM_BOT_TOKEN?: string;
         TELEGRAM_WEBHOOK_SECRET?: string;
         TELEGRAM_ALLOWED_IDS?: string;

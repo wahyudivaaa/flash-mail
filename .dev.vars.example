@@ -12,6 +12,17 @@ SETUP_TOKEN="<change-this-long-random-bootstrap-token>"
 TURNSTILE_SITE_KEY="<cloudflare-turnstile-site-key>"
 TURNSTILE_SECRET_KEY="<cloudflare-turnstile-secret-key>"
 
+# 2b. OUTBOUND EMAIL API (Opsional)
+# Dipakai oleh aplikasi lain untuk mengirim email user-facing lewat /api/public/v1/send_email.
+# Endpoint ini tetap wajib memakai x-api-key/Bearer API key public API.
+MAILFLARE_ALLOWED_SENDERS="supportflashotp@flashdev.store"
+MAILFLARE_DEFAULT_FROM_EMAIL="supportflashotp@flashdev.store"
+MAILFLARE_DEFAULT_FROM_NAME="Flash OTP"
+MAILFLARE_ENABLE_CLOUDFLARE_BINDING="false"
+MAILFLARE_ENABLE_CLOUDFLARE_REST="false"
+MAILFLARE_ENABLE_MAILCHANNELS="true"
+MAILCHANNELS_API_KEY="<mailchannels-api-key>"
+
 # 3. TELEGRAM INTEGRATION (Opsional)
 # Hanya diperlukan bila bot Telegram dihidupkan untuk fitur notifikasi inbox beruntun.
 TELEGRAM_BOT_TOKEN="<telegram-bot-token>"

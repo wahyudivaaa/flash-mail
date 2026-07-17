@@ -256,8 +256,23 @@ function __mailflareExtractLocalPart(address) {
 
 function __mailflareIsAutoMailboxAddress(address, authorativeDomain) {
   const normalized = String(address || '').trim().toLowerCase();
-  const domain = String(authorativeDomain || '').trim().toLowerCase();
-  if (!normalized || !domain || !normalized.endsWith('@' + domain)) {
+  if (!normalized || !normalized.includes('@')) {
+    return false;
+  }
+
+  // Accept any managed domain: authorativeDomain may be a single domain OR a
+  // comma-separated list (MAILFLARE_USER_DOMAIN + extra managed domains).
+  const allowed = String(authorativeDomain || '')
+    .split(',')
+    .map((part) => String(part || '').trim().toLowerCase())
+    .filter(Boolean);
+  const domain = normalized.split('@')[1] || '';
+  if (!domain) {
+    return false;
+  }
+  // If no allow-list configured, still accept syntactically valid addresses so
+  // catch-all multi-domain routing can auto-create the mailbox.
+  if (allowed.length > 0 && !allowed.includes(domain)) {
     return false;
   }
 
@@ -378,7 +393,14 @@ async function __mailflareResolveRecipient(db, recipient, authorativeDomain) {
 }
 
 async function __mailflareHandleInboundEmail(message, env, ctx, worker) {
-  const authorativeDomain = String((env && env.MAILFLARE_USER_DOMAIN) || __mailflareFallbackUserDomain || '').trim().toLowerCase();
+  // Support multi-domain farms: MAILFLARE_USER_DOMAIN can be "flashdev.org" or
+  // "flashdev.org,flashdev.fun,devflash.online". Exact DB match still wins first.
+  const authorativeDomain = String(
+    (env && env.MAILFLARE_USER_DOMAIN) || __mailflareFallbackUserDomain || ''
+  )
+    .trim()
+    .toLowerCase();
+  const primaryDomain = authorativeDomain.split(',')[0].trim();
 
   // CRITICAL: In Cloudflare Email Workers, message.to is an object (not a plain string) where:
   //   - toJSON() / JSON.stringify → SMTP envelope RCPT TO  (the correct address CF received)
@@ -426,7 +448,13 @@ async function __mailflareHandleInboundEmail(message, env, ctx, worker) {
   let resolvedRecipient = '';
   let resolvedFrom = '';
   for (const candidate of candidates) {
-    const resolved = await __mailflareResolveRecipient(db, candidate, authorativeDomain).catch(() => '');
+    // Prefer exact domain of the candidate; fall back to primary managed domain.
+    const candidateDomain = (candidate.split('@')[1] || primaryDomain || '').toLowerCase();
+    const resolved = await __mailflareResolveRecipient(
+      db,
+      candidate,
+      candidateDomain || authorativeDomain
+    ).catch(() => '');
     if (resolved) {
       resolvedRecipient = resolved;
       resolvedFrom = candidate;
