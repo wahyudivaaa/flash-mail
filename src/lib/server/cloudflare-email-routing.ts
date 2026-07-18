@@ -5,6 +5,7 @@ import { getExternalMailRoutingMessage, isExternalMailDomain } from '$lib/server
 
 export interface CloudflareEmailRoutingEnv {
   CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_ZONE_ID?: string;
   CLOUDFLARE_EMAIL_WORKER_NAME?: string;
   MAILFLARE_EMAIL_WORKER_NAME?: string;
@@ -204,7 +205,13 @@ export async function ensureCatchAllEmailRoutingRule(
     const dedicatedWorker = existingDedicated?.actions?.some(
       (action) => action.type === 'worker' && action.value?.includes(workerName)
     );
-    if (catchAllResponse.ok && catchAllPayload?.success && existingDedicated?.enabled !== false && dedicatedWorker) {
+    if (
+      catchAllResponse.ok &&
+      catchAllPayload?.success &&
+      existingDedicated &&
+      existingDedicated.enabled !== false &&
+      dedicatedWorker
+    ) {
       return {
         ok: true,
         skipped: false,
