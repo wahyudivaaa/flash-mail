@@ -167,6 +167,20 @@ CREATE TABLE IF NOT EXISTS netflix_claims (
   FOREIGN KEY (email_id) REFERENCES emails(id)
 );
 
+CREATE TABLE IF NOT EXISTS grok_claims (
+  user_id TEXT PRIMARY KEY,
+  email_id TEXT NOT NULL UNIQUE,
+  detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  detected_subject TEXT NOT NULL DEFAULT '',
+  detected_sender TEXT NOT NULL DEFAULT '',
+  recipient TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'detected',
+  confirmation_code TEXT NOT NULL DEFAULT '',
+  service_name TEXT NOT NULL DEFAULT 'xAI',
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (email_id) REFERENCES emails(id)
+);
+
 CREATE TABLE IF NOT EXISTS worker_metrics (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0,
@@ -250,6 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_gpt_plus_claims_claimed_at ON gpt_plus_claims(cla
 CREATE INDEX IF NOT EXISTS idx_kiro_github_claims_authorized_at ON kiro_github_claims(authorized_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pioneer_ai_claims_detected_at ON pioneer_ai_claims(detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_netflix_claims_detected_at ON netflix_claims(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_grok_claims_detected_at ON grok_claims(detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_initial_credentials_email ON user_initial_credentials(email);
 
 CREATE TABLE IF NOT EXISTS user_email_aliases (

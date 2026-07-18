@@ -7,6 +7,7 @@ import type {
   EmailDto,
   GptPlusClaimDto,
   KiroGithubClaimDto,
+  GrokClaimDto,
   NetflixClaimDto,
   PioneerAiClaimDto,
   UserDto
@@ -18,10 +19,12 @@ const GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS = 60_000;
 const KIRO_GITHUB_BACKFILL_INTERVAL_MS = 60_000;
 const PIONEER_AI_BACKFILL_INTERVAL_MS = 60_000;
 const NETFLIX_BACKFILL_INTERVAL_MS = 60_000;
+const GROK_BACKFILL_INTERVAL_MS = 60_000;
 let lastGptPlusDeactivationBackfillAt = 0;
 let lastKiroGithubBackfillAt = 0;
 let lastPioneerAiBackfillAt = 0;
 let lastNetflixBackfillAt = 0;
+let lastGrokBackfillAt = 0;
 
 interface CreateUserInput {
   email: string;
@@ -843,6 +846,20 @@ export async function upsertInboundEmailInDb(
   });
 
   await detectAndStoreNetflixClaim(db, {
+    userId,
+    emailId,
+    sender,
+    recipient,
+    subject,
+    snippet,
+    bodyText,
+    bodyHtml: parsedHtml,
+    parsedSubject: subject,
+    parsedSender: fromMailbox.email || sender,
+    receivedAt
+  });
+
+  await detectAndStoreGrokClaim(db, {
     userId,
     emailId,
     sender,
@@ -2083,6 +2100,76 @@ async function detectAndStoreNetflixClaim(db: D1Database, input: DetectGptPlusCl
   }
 }
 
+
+async function detectAndStoreGrokClaim(db: D1Database, input: DetectGptPlusClaimInput): Promise<void> {
+  const subject = (input.parsedSubject || input.subject || '').trim();
+  const sender = (input.parsedSender || input.sender || '').trim();
+  const recipient = input.recipient.trim().toLowerCase();
+  const rawText = buildGrokRawText(input);
+  const searchText = normalizeSearchText(rawText);
+  if (!isGrokAccountEmail(subject, sender, searchText)) {
+    return;
+  }
+
+  const detectedAt = input.receivedAt || new Date().toISOString();
+  const status = getGrokEmailStatus(subject, searchText);
+  const confirmationCode = extractGrokConfirmationCode(subject, rawText);
+
+  try {
+    await db
+      .prepare(
+        `
+      INSERT INTO grok_claims (
+        user_id,
+        email_id,
+        detected_at,
+        detected_subject,
+        detected_sender,
+        recipient,
+        status,
+        confirmation_code,
+        service_name
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        email_id = excluded.email_id,
+        detected_at = excluded.detected_at,
+        detected_subject = excluded.detected_subject,
+        detected_sender = excluded.detected_sender,
+        recipient = excluded.recipient,
+        status = CASE
+          WHEN excluded.status = 'confirmed' OR grok_claims.status = 'confirmed' THEN 'confirmed'
+          ELSE 'detected'
+        END,
+        confirmation_code = CASE
+          WHEN excluded.confirmation_code != '' THEN excluded.confirmation_code
+          ELSE grok_claims.confirmation_code
+        END,
+        service_name = CASE
+          WHEN excluded.service_name != '' THEN excluded.service_name
+          ELSE grok_claims.service_name
+        END
+    `
+      )
+      .bind(
+        input.userId,
+        input.emailId,
+        detectedAt,
+        subject.slice(0, 998),
+        sender.slice(0, 320),
+        recipient.slice(0, 320),
+        status,
+        confirmationCode.slice(0, 32),
+        'xAI'
+      )
+      .run();
+  } catch (error) {
+    if (!isMissingOptionalTableError(error, 'grok_claims')) {
+      throw error;
+    }
+  }
+}
+
 async function backfillRecentGptPlusDeactivationsFromDb(db: D1Database): Promise<void> {
   const now = Date.now();
   if (now - lastGptPlusDeactivationBackfillAt < GPT_PLUS_DEACTIVATION_BACKFILL_INTERVAL_MS) {
@@ -2356,6 +2443,84 @@ async function backfillRecentNetflixClaimsFromDb(db: D1Database): Promise<void> 
   }
 }
 
+
+async function backfillRecentGrokClaimsFromDb(db: D1Database): Promise<void> {
+  const now = Date.now();
+  if (now - lastGrokBackfillAt < GROK_BACKFILL_INTERVAL_MS) {
+    return;
+  }
+  lastGrokBackfillAt = now;
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      SELECT
+        id,
+        user_id,
+        sender,
+        recipient,
+        COALESCE(subject, parsed_subject, '') AS subject,
+        COALESCE(snippet, '') AS snippet,
+        COALESCE(parsed_text, body_text, '') AS body_text,
+        COALESCE(parsed_html, body_html, '') AS body_html,
+        received_at
+      FROM emails
+      WHERE deleted_at IS NULL
+        AND (
+          lower(sender) LIKE '%x.ai%'
+          OR lower(sender) LIKE '%xai%'
+          OR lower(COALESCE(parsed_from_email, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(parsed_from_email, '')) LIKE '%xai%'
+          OR lower(COALESCE(parsed_sender, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(parsed_sender, '')) LIKE '%xai%'
+          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%xai confirmation%'
+          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(body_text, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(body_text, '')) LIKE '%one time security code%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%one time security code%'
+        )
+        AND (
+          lower(COALESCE(subject, parsed_subject, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%xai confirmation%'
+          OR lower(COALESCE(body_text, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(body_text, '')) LIKE '%verify your email%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%verify your email%'
+          OR lower(COALESCE(parsed_html, '')) LIKE '%verify your email%'
+          OR lower(COALESCE(body_text, '')) LIKE '%one time security code%'
+          OR lower(COALESCE(parsed_text, '')) LIKE '%one time security code%'
+        )
+      ORDER BY received_at DESC
+      LIMIT 250
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    for (const row of response.results ?? []) {
+      const input = {
+        userId: String(row.user_id ?? ''),
+        emailId: String(row.id ?? ''),
+        sender: String(row.sender ?? ''),
+        recipient: String(row.recipient ?? ''),
+        subject: String(row.subject ?? ''),
+        snippet: String(row.snippet ?? ''),
+        bodyText: String(row.body_text ?? ''),
+        bodyHtml: String(row.body_html ?? ''),
+        receivedAt: String(row.received_at ?? '')
+      };
+      if (input.userId && input.emailId) {
+        await detectAndStoreGrokClaim(db, input);
+      }
+    }
+  } catch {
+    // This is opportunistic. A failed backfill should never block the page.
+  }
+}
+
 interface StoreGptPlusDeactivationInput extends DetectGptPlusClaimInput {
   detectedAccountEmail?: string;
 }
@@ -2611,6 +2776,61 @@ function getNetflixEmailStatus(subject: string, searchText: string): NetflixClai
   return 'detected';
 }
 
+function isGrokAccountEmail(subject: string, sender: string, searchText: string): boolean {
+  const normalizedSubject = subject.toLowerCase();
+  const normalizedSender = sender.toLowerCase();
+  const xaiRelated =
+    normalizedSender.includes('x.ai') ||
+    normalizedSender.includes('xai') ||
+    normalizedSubject.includes('x.ai') ||
+    normalizedSubject.includes('xai') ||
+    searchText.includes('x.ai') ||
+    searchText.includes('accounts.x.ai') ||
+    searchText.includes('xai confirmation') ||
+    searchText.includes('noreply@x.ai');
+  const looksConfirmation =
+    /\b[a-z0-9]{3}-[a-z0-9]{3}\s+xai\s+confirmation/.test(normalizedSubject) ||
+    normalizedSubject.includes('xai confirmation code') ||
+    normalizedSubject.includes('confirmation code') ||
+    searchText.includes('xai confirmation code') ||
+    searchText.includes('one time security code') ||
+    searchText.includes('one-time security code') ||
+    (searchText.includes('verify your email') && (searchText.includes('x.ai') || searchText.includes('xai')));
+  const looksGrokProduct =
+    searchText.includes('grok') && (searchText.includes('x.ai') || searchText.includes('xai') || normalizedSender.includes('x.ai'));
+
+  return xaiRelated && (looksConfirmation || looksGrokProduct);
+}
+
+function getGrokEmailStatus(subject: string, searchText: string): GrokClaimDto['status'] {
+  const normalizedSubject = subject.toLowerCase();
+  if (
+    /\b[a-z0-9]{3}-[a-z0-9]{3}\s+xai\s+confirmation/.test(normalizedSubject) ||
+    normalizedSubject.includes('xai confirmation code') ||
+    searchText.includes('xai confirmation code') ||
+    searchText.includes('one time security code') ||
+    searchText.includes('one-time security code')
+  ) {
+    return 'confirmed';
+  }
+  return 'detected';
+}
+
+function extractGrokConfirmationCode(subject: string, rawText: string): string {
+  const subjectMatch = subject.match(/^\s*([A-Za-z0-9]{3}-[A-Za-z0-9]{3})\s+xAI\s+confirmation/i);
+  if (subjectMatch?.[1]) {
+    return subjectMatch[1].toUpperCase();
+  }
+
+  const genericMatch = `${subject}\n${rawText}`.match(/\b([A-Za-z0-9]{3}-[A-Za-z0-9]{3})\b/);
+  if (genericMatch?.[1] && /xai|confirmation|security code/i.test(`${subject} ${rawText}`)) {
+    return genericMatch[1].toUpperCase();
+  }
+
+  return '';
+}
+
+
 function buildGptSignalSearchText(input: DetectGptPlusClaimInput): string {
   return normalizeSearchText(
     [
@@ -2640,6 +2860,10 @@ function buildPioneerAiRawText(input: DetectGptPlusClaimInput): string {
 }
 
 function buildNetflixRawText(input: DetectGptPlusClaimInput): string {
+  return buildKiroGithubRawText(input);
+}
+
+function buildGrokRawText(input: DetectGptPlusClaimInput): string {
   return buildKiroGithubRawText(input);
 }
 
@@ -3148,6 +3372,94 @@ function sortNetflixClaimsByDateDesc(a: NetflixClaimDto, b: NetflixClaimDto): nu
 
 function getNetflixSortDate(claim: NetflixClaimDto): string {
   return claim.nextBillingAt || claim.trialEndsAt || claim.detectedAt;
+}
+
+export async function getGrokClaimsFromDb(db: D1Database | undefined): Promise<GrokClaimDto[]> {
+  if (!db) {
+    return [];
+  }
+
+  await backfillRecentGrokClaimsFromDb(db);
+
+  try {
+    const response = await db
+      .prepare(
+        `
+      WITH owner AS (
+        SELECT id AS owner_id
+        FROM users
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      )
+      SELECT
+        u.id AS user_id,
+        u.email,
+        COALESCE(u.display_name, u.email) AS display_name,
+        CASE
+          WHEN u.id = (SELECT owner_id FROM owner) THEN 'owner'
+          ELSE 'member'
+        END AS role,
+        COALESCE(c.initial_password, '') AS initial_password,
+        g.detected_at,
+        g.email_id,
+        g.detected_subject,
+        g.detected_sender,
+        g.recipient,
+        COALESCE(g.status, 'detected') AS status,
+        COALESCE(g.confirmation_code, '') AS confirmation_code,
+        COALESCE(g.service_name, 'xAI') AS service_name
+      FROM grok_claims g
+      INNER JOIN users u
+        ON u.id = g.user_id
+      LEFT JOIN user_initial_credentials c
+        ON c.user_id = u.id
+      WHERE u.password_hash IS NOT NULL
+      LIMIT 1000
+    `
+      )
+      .all<Record<string, unknown>>();
+
+    return (response.results ?? [])
+      .map((row) => mapGrokClaimRow(row))
+      .sort(sortGrokClaimsByDateDesc)
+      .slice(0, 250);
+  } catch (error) {
+    if (isMissingOptionalTableError(error, 'grok_claims') || isMissingOptionalTableError(error, 'user_initial_credentials')) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function mapGrokClaimRow(row: Record<string, unknown>): GrokClaimDto {
+  const status = normalizeGrokStatus(String(row.status ?? ''));
+  return {
+    userId: String(row.user_id ?? ''),
+    email: String(row.email ?? ''),
+    displayName: String(row.display_name ?? ''),
+    role: String(row.role ?? 'member'),
+    initialPassword: String(row.initial_password ?? ''),
+    detectedAt: String(row.detected_at ?? ''),
+    emailId: String(row.email_id ?? ''),
+    detectedSubject: String(row.detected_subject ?? ''),
+    detectedSender: String(row.detected_sender ?? ''),
+    recipient: String(row.recipient ?? ''),
+    status,
+    confirmationCode: String(row.confirmation_code ?? ''),
+    serviceName: String(row.service_name ?? 'xAI')
+  };
+}
+
+function normalizeGrokStatus(value: string): GrokClaimDto['status'] {
+  return value.trim().toLowerCase() === 'confirmed' ? 'confirmed' : 'detected';
+}
+
+function sortGrokClaimsByDateDesc(a: GrokClaimDto, b: GrokClaimDto): number {
+  const newest = getStoredDateTime(b.detectedAt) - getStoredDateTime(a.detectedAt);
+  if (newest !== 0) {
+    return newest;
+  }
+  return a.email.localeCompare(b.email);
 }
 
 function getStoredDateTime(value: string): number {

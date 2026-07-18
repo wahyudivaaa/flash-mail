@@ -200,6 +200,23 @@ export interface NetflixClaimDto {
   nextBillingAt: string;
 }
 
+export interface GrokClaimDto {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: string;
+  initialPassword: string;
+  detectedAt: string;
+  emailId: string;
+  detectedSubject: string;
+  detectedSender: string;
+  recipient: string;
+  status: 'confirmed' | 'detected';
+  confirmationCode: string;
+  serviceName: string;
+}
+
+
 export interface DotAliasUsageDto {
   email: string;
   used: boolean;
