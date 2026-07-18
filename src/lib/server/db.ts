@@ -2452,50 +2452,51 @@ async function backfillRecentGrokClaimsFromDb(db: D1Database): Promise<void> {
   lastGrokBackfillAt = now;
 
   try {
+    // Prefer users still missing a claim so historical xAI OTP mail is not starved
+    // by the newest 250 rows (farm traffic keeps the recent window saturated).
     const response = await db
       .prepare(
         `
       SELECT
-        id,
-        user_id,
-        sender,
-        recipient,
-        COALESCE(subject, parsed_subject, '') AS subject,
-        COALESCE(snippet, '') AS snippet,
-        COALESCE(parsed_text, body_text, '') AS body_text,
-        COALESCE(parsed_html, body_html, '') AS body_html,
-        received_at
-      FROM emails
-      WHERE deleted_at IS NULL
-        AND (
-          lower(sender) LIKE '%x.ai%'
-          OR lower(sender) LIKE '%xai%'
-          OR lower(COALESCE(parsed_from_email, '')) LIKE '%x.ai%'
-          OR lower(COALESCE(parsed_from_email, '')) LIKE '%xai%'
-          OR lower(COALESCE(parsed_sender, '')) LIKE '%x.ai%'
-          OR lower(COALESCE(parsed_sender, '')) LIKE '%xai%'
-          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%xai confirmation%'
-          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%x.ai%'
-          OR lower(COALESCE(body_text, '')) LIKE '%x.ai%'
-          OR lower(COALESCE(parsed_text, '')) LIKE '%x.ai%'
-          OR lower(COALESCE(parsed_html, '')) LIKE '%x.ai%'
-          OR lower(COALESCE(body_text, '')) LIKE '%one time security code%'
-          OR lower(COALESCE(parsed_text, '')) LIKE '%one time security code%'
+        e.id,
+        e.user_id,
+        e.sender,
+        e.recipient,
+        COALESCE(e.subject, e.parsed_subject, '') AS subject,
+        COALESCE(e.snippet, '') AS snippet,
+        COALESCE(e.parsed_text, e.body_text, '') AS body_text,
+        COALESCE(e.parsed_html, e.body_html, '') AS body_html,
+        e.received_at
+      FROM emails e
+      INNER JOIN users u
+        ON u.id = e.user_id
+      WHERE e.deleted_at IS NULL
+        AND u.password_hash IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM grok_claims g WHERE g.user_id = e.user_id
         )
         AND (
-          lower(COALESCE(subject, parsed_subject, '')) LIKE '%confirmation code%'
-          OR lower(COALESCE(subject, parsed_subject, '')) LIKE '%xai confirmation%'
-          OR lower(COALESCE(body_text, '')) LIKE '%confirmation code%'
-          OR lower(COALESCE(parsed_text, '')) LIKE '%confirmation code%'
-          OR lower(COALESCE(parsed_html, '')) LIKE '%confirmation code%'
-          OR lower(COALESCE(body_text, '')) LIKE '%verify your email%'
-          OR lower(COALESCE(parsed_text, '')) LIKE '%verify your email%'
-          OR lower(COALESCE(parsed_html, '')) LIKE '%verify your email%'
-          OR lower(COALESCE(body_text, '')) LIKE '%one time security code%'
-          OR lower(COALESCE(parsed_text, '')) LIKE '%one time security code%'
+          lower(e.sender) LIKE '%x.ai%'
+          OR lower(COALESCE(e.parsed_from_email, '')) LIKE '%x.ai%'
+          OR lower(COALESCE(e.subject, e.parsed_subject, '')) LIKE '%xai confirmation%'
+          OR lower(COALESCE(e.subject, e.parsed_subject, '')) LIKE '%confirmation code%'
         )
-      ORDER BY received_at DESC
-      LIMIT 250
+        AND (
+          lower(COALESCE(e.subject, e.parsed_subject, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(e.subject, e.parsed_subject, '')) LIKE '%xai confirmation%'
+          OR lower(COALESCE(e.body_text, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(e.parsed_text, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(e.parsed_html, '')) LIKE '%confirmation code%'
+          OR lower(COALESCE(e.body_text, '')) LIKE '%verify your email%'
+          OR lower(COALESCE(e.parsed_text, '')) LIKE '%verify your email%'
+          OR lower(COALESCE(e.parsed_html, '')) LIKE '%verify your email%'
+          OR lower(COALESCE(e.body_text, '')) LIKE '%one time security code%'
+          OR lower(COALESCE(e.parsed_text, '')) LIKE '%one time security code%'
+          OR lower(COALESCE(e.body_text, '')) LIKE '%one-time security code%'
+          OR lower(COALESCE(e.parsed_text, '')) LIKE '%one-time security code%'
+        )
+      ORDER BY e.received_at DESC
+      LIMIT 2000
     `
       )
       .all<Record<string, unknown>>();
@@ -3414,15 +3415,13 @@ export async function getGrokClaimsFromDb(db: D1Database | undefined): Promise<G
       LEFT JOIN user_initial_credentials c
         ON c.user_id = u.id
       WHERE u.password_hash IS NOT NULL
-      LIMIT 1000
+      ORDER BY g.detected_at DESC
+      LIMIT 5000
     `
       )
       .all<Record<string, unknown>>();
 
-    return (response.results ?? [])
-      .map((row) => mapGrokClaimRow(row))
-      .sort(sortGrokClaimsByDateDesc)
-      .slice(0, 250);
+    return (response.results ?? []).map((row) => mapGrokClaimRow(row)).sort(sortGrokClaimsByDateDesc);
   } catch (error) {
     if (isMissingOptionalTableError(error, 'grok_claims') || isMissingOptionalTableError(error, 'user_initial_credentials')) {
       return [];
