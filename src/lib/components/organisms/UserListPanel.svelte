@@ -46,6 +46,8 @@
   let isSubmitting = false;
   let isGeneratingUsername = false;
   let actionUserId = '';
+  let isBulkDeleting = false;
+  let selectedUserIds = new Set<string>();
   let errorMessage = '';
   let copyMessage = '';
   let routingMessage = '';
@@ -56,6 +58,12 @@
     password: string;
     outlookForwardingAddress?: string;
   } | null = null;
+
+  $: selectableUsers = users.filter((user) => user.role !== 'owner' && user.status === 'active');
+  $: selectableUserIds = new Set(selectableUsers.map((user) => user.id));
+  $: selectedUsers = users.filter((user) => selectedUserIds.has(user.id) && selectableUserIds.has(user.id));
+  $: selectedCount = selectedUsers.length;
+  $: allSelectableSelected = selectableUsers.length > 0 && selectedCount === selectableUsers.length;
 
   $: domainOptions = buildDomainOptions(domains, $t);
   $: selectedDomainOption = domainOptions.find((domain) => domain.domain === selectedDomain);
@@ -377,8 +385,88 @@
     }
   }
 
+  function isUserSelected(userId: string) {
+    return selectedUserIds.has(userId);
+  }
+
+  function toggleUserSelection(user: UserDto, checked: boolean) {
+    if (user.role === 'owner' || user.status !== 'active') {
+      return;
+    }
+    const next = new Set(selectedUserIds);
+    if (checked) {
+      next.add(user.id);
+    } else {
+      next.delete(user.id);
+    }
+    selectedUserIds = next;
+  }
+
+  function toggleSelectAll(checked: boolean) {
+    if (!checked) {
+      selectedUserIds = new Set();
+      return;
+    }
+    selectedUserIds = new Set(selectableUsers.map((user) => user.id));
+  }
+
+  function clearSelection() {
+    selectedUserIds = new Set();
+  }
+
+  type SoftDeleteRouting = {
+    ok: boolean;
+    skipped: boolean;
+    deletedRuleIds: string[];
+    message: string;
+  };
+
+  type SoftDeleteResult =
+    | { ok: true; alreadyDeleted?: boolean; routing?: SoftDeleteRouting }
+    | { ok: false; error: string };
+
+  async function softDeleteUserRequest(userId: string): Promise<SoftDeleteResult> {
+    const response = await fetch(`/api/users/${userId}`, {
+      method: 'DELETE',
+      headers: {
+        'x-mailflare-confirm': 'soft-delete-user'
+      }
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          error?: string;
+          ok?: boolean;
+          alreadyDeleted?: boolean;
+          routing?: SoftDeleteRouting;
+        }
+      | null;
+
+    if (!response.ok) {
+      return { ok: false, error: payload?.error ?? $t('user.deleteFailedGeneric') };
+    }
+
+    return {
+      ok: true,
+      alreadyDeleted: payload?.alreadyDeleted === true,
+      routing: payload?.routing
+    };
+  }
+
+  function formatRoutingFeedback(routing: SoftDeleteRouting | undefined) {
+    if (!routing) {
+      return $t('user.routeCleanupCheck');
+    }
+    if (!routing.ok) {
+      return $t('user.routeCleanupCheck');
+    }
+    if (routing.deletedRuleIds.length > 0) {
+      return $t('user.routeDeletedCloudflare', { count: routing.deletedRuleIds.length });
+    }
+    return $t('user.routeNoneCloudflare');
+  }
+
   async function handleQuickSoftDelete(user: UserDto) {
-    if (isSubmitting || actionUserId) {
+    if (isSubmitting || actionUserId || isBulkDeleting) {
       return;
     }
     if (user.role === 'owner') {
@@ -386,12 +474,12 @@
       return;
     }
     const confirmed = await confirmDialog({
-      title: $t('user.disable'),
-      text: $t('user.confirmDisable', { email: user.email }),
+      title: $t('user.deleteAccount'),
+      text: $t('user.confirmDeleteCloudflare', { email: user.email }),
       icon: 'warning',
       detailLabel: $t('common.email'),
       detailValue: user.email,
-      confirmButtonText: $t('user.disable'),
+      confirmButtonText: $t('user.deleteAccount'),
       cancelButtonText: $t('common.cancel'),
       danger: true
     });
@@ -403,35 +491,120 @@
     actionUserId = user.id;
 
     try {
-      const response = await fetch(`/api/users/${user.id}`, {
-        method: 'DELETE',
-        headers: {
-          'x-mailflare-confirm': 'soft-delete-user'
-        }
-      });
-      const payload = (await response.json().catch(() => null)) as
-        | { error?: string; routing?: { ok: boolean; skipped: boolean; deletedRuleIds: string[]; message: string } }
-        | null;
-      if (!response.ok) {
-        showActionToast(payload?.error ?? 'Gagal menonaktifkan pengguna.', 'danger', $t('user.noticeActionFailed'));
+      const result = await softDeleteUserRequest(user.id);
+      if (!result.ok) {
+        showActionToast(result.error, 'danger', $t('user.noticeActionFailed'));
         return;
       }
 
-      const routingMessage = payload?.routing?.ok
-        ? payload.routing.deletedRuleIds.length > 0
-          ? $t('user.routeDeleted')
-          : $t('user.routeNone')
-        : $t('user.routeCleanupCheck');
+      const routingMessage = formatRoutingFeedback(result.routing);
       showActionToast(
-        $t('user.disabledMessage', { email: user.email, message: routingMessage }),
-        payload?.routing?.ok ? 'success' : 'warning',
-        payload?.routing?.ok ? $t('user.noticeDisabledTitle') : $t('user.noticeRouteWarningTitle')
+        $t('user.deletedMessage', { email: user.email, message: routingMessage }),
+        result.routing?.ok !== false ? 'success' : 'warning',
+        result.routing?.ok !== false ? $t('user.noticeDeletedTitle') : $t('user.noticeRouteWarningTitle')
       );
+      const next = new Set(selectedUserIds);
+      next.delete(user.id);
+      selectedUserIds = next;
       dispatch('userchanged');
     } catch {
       showActionToast('Tidak bisa menghubungi server. Coba lagi.', 'danger', $t('user.noticeActionFailed'));
     } finally {
       actionUserId = '';
+    }
+  }
+
+  async function handleBulkSoftDelete() {
+    if (isSubmitting || actionUserId || isBulkDeleting) {
+      return;
+    }
+    const targets = selectedUsers;
+    if (targets.length === 0) {
+      showActionToast($t('user.bulkDeleteNone'), 'warning', $t('user.noticeBlockedTitle'));
+      return;
+    }
+
+    const previewEmails = targets
+      .slice(0, 5)
+      .map((user) => user.email)
+      .join(', ');
+    const more = targets.length > 5 ? ` (+${targets.length - 5})` : '';
+    const confirmed = await confirmDialog({
+      title: $t('user.bulkDeleteTitle'),
+      text: $t('user.confirmBulkDeleteCloudflare', { count: targets.length }),
+      icon: 'warning',
+      detailLabel: $t('common.email'),
+      detailValue: `${previewEmails}${more}`,
+      confirmButtonText: $t('user.bulkDeleteAction'),
+      cancelButtonText: $t('common.cancel'),
+      danger: true
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    isBulkDeleting = true;
+    errorMessage = '';
+
+    let deleted = 0;
+    let failed = 0;
+    let routingOk = 0;
+    let routingWarn = 0;
+    let rulesRemoved = 0;
+    const failedEmails: string[] = [];
+
+    try {
+      for (const user of targets) {
+        actionUserId = user.id;
+        try {
+          const result = await softDeleteUserRequest(user.id);
+          if (!result.ok) {
+            failed += 1;
+            failedEmails.push(user.email);
+            continue;
+          }
+          deleted += 1;
+          if (result.routing?.ok) {
+            routingOk += 1;
+            rulesRemoved += result.routing.deletedRuleIds.length;
+          } else {
+            routingWarn += 1;
+          }
+        } catch {
+          failed += 1;
+          failedEmails.push(user.email);
+        }
+      }
+
+      clearSelection();
+      dispatch('userchanged');
+
+      if (failed === 0) {
+        showActionToast(
+          $t('user.bulkDeleteDone', { count: deleted, rules: rulesRemoved }),
+          routingWarn > 0 ? 'warning' : 'success',
+          routingWarn > 0 ? $t('user.noticeRouteWarningTitle') : $t('user.noticeBulkDeletedTitle')
+        );
+      } else if (deleted === 0) {
+        showActionToast(
+          $t('user.bulkDeleteAllFailed', { count: failed }),
+          'danger',
+          $t('user.noticeActionFailed')
+        );
+      } else {
+        showActionToast(
+          $t('user.bulkDeletePartial', {
+            deleted,
+            failed,
+            sample: failedEmails.slice(0, 2).join(', ')
+          }),
+          'warning',
+          $t('user.noticeRouteWarningTitle')
+        );
+      }
+    } finally {
+      actionUserId = '';
+      isBulkDeleting = false;
     }
   }
 </script>
@@ -444,7 +617,20 @@
     </div>
     <div class="panel-actions">
       <span class="sync-status" class:syncing={autoRefreshing}>{autoRefreshLabel}</span>
-      <Button on:click={openModal}>
+      {#if selectedCount > 0}
+        <Button variant="ghost" on:click={clearSelection} disabled={isBulkDeleting}>
+          {$t('user.clearSelection')}
+        </Button>
+        <Button variant="secondary" on:click={handleBulkSoftDelete} disabled={isBulkDeleting || !!actionUserId}>
+          <Icon name="delete_forever" size={18} />
+          {#if isBulkDeleting}
+            {$t('user.bulkDeleting')}
+          {:else}
+            {$t('user.bulkDeleteAction')} ({selectedCount})
+          {/if}
+        </Button>
+      {/if}
+      <Button on:click={openModal} disabled={isBulkDeleting}>
         <Icon name="person_add" size={18} />
         {$t('user.add')}
       </Button>
@@ -511,29 +697,58 @@
     </div>
   {:else}
     <div class="list">
+      <div class="selection-bar">
+        <label class="select-all">
+          <input
+            type="checkbox"
+            checked={allSelectableSelected}
+            disabled={selectableUsers.length === 0 || isBulkDeleting}
+            on:change={(event) => toggleSelectAll((event.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>
+            {#if selectedCount > 0}
+              {$t('user.selectedCount', { count: selectedCount })}
+            {:else}
+              {$t('user.selectAll')}
+            {/if}
+          </span>
+        </label>
+        <p class="text-muted selection-hint">{$t('user.deleteCloudflareHint')}</p>
+      </div>
       {#each users as user (user.id)}
-        <div class="row">
+        <div class="row" class:row-selected={isUserSelected(user.id)} class:row-busy={actionUserId === user.id && isBulkDeleting}>
           <div class="identity-stack">
-            <a href={`/users/${user.id}/inbox`} class="identity-link">
-              <Avatar initials={user.displayName.slice(0, 2).toUpperCase()} />
-              <div>
-                <div class="name">{user.displayName}</div>
-                <div class="text-muted">{user.email}</div>
-                <div class="text-muted identity-metrics">
-                  <span>{$t('common.email')}: {formatCount(user.totalEmails)}</span>
-                  <span>{$t('dashboard.metric.unread')}: {formatCount(user.unreadEmails)}</span>
-                </div>
-                {#if user.gptPlusClaimed}
-                  <div class="gpt-claim-card" class:deactivated={isGptPlusDeactivated(user)}>
-                    <span class="claim-label">{formatGptPlusStatus(user)}</span>
-                    <code>{user.email}</code>
-                    {#if isGptPlusDeactivated(user)}
-                      <small>{$t('user.gptDeactivatedCopy')}</small>
-                    {/if}
+            <div class="identity-row">
+              <label class="row-select" class:disabled={user.role === 'owner' || user.status !== 'active' || isBulkDeleting}>
+                <input
+                  type="checkbox"
+                  checked={isUserSelected(user.id)}
+                  disabled={user.role === 'owner' || user.status !== 'active' || isBulkDeleting}
+                  aria-label={$t('user.selectUser', { email: user.email })}
+                  on:change={(event) => toggleUserSelection(user, (event.currentTarget as HTMLInputElement).checked)}
+                />
+              </label>
+              <a href={`/users/${user.id}/inbox`} class="identity-link">
+                <Avatar initials={user.displayName.slice(0, 2).toUpperCase()} />
+                <div>
+                  <div class="name">{user.displayName}</div>
+                  <div class="text-muted">{user.email}</div>
+                  <div class="text-muted identity-metrics">
+                    <span>{$t('common.email')}: {formatCount(user.totalEmails)}</span>
+                    <span>{$t('dashboard.metric.unread')}: {formatCount(user.unreadEmails)}</span>
                   </div>
-                {/if}
-              </div>
-            </a>
+                  {#if user.gptPlusClaimed}
+                    <div class="gpt-claim-card" class:deactivated={isGptPlusDeactivated(user)}>
+                      <span class="claim-label">{formatGptPlusStatus(user)}</span>
+                      <code>{user.email}</code>
+                      {#if isGptPlusDeactivated(user)}
+                        <small>{$t('user.gptDeactivatedCopy')}</small>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              </a>
+            </div>
             {#if user.initialPassword}
               <div class="initial-password-card">
                 <span class="initial-password-label">{$t('user.initialPassword')}</span>
@@ -581,9 +796,9 @@
               <button
                 class="icon-action danger"
                 type="button"
-                aria-label={$t('user.disable')}
-                title={$t('user.disable')}
-                disabled={actionUserId === user.id || user.role === 'owner' || user.status !== 'active'}
+                aria-label={$t('user.deleteAccount')}
+                title={$t('user.deleteAccount')}
+                disabled={actionUserId === user.id || isBulkDeleting || user.role === 'owner' || user.status !== 'active'}
                 on:click={() => handleQuickSoftDelete(user)}
               >
                 <Icon name="person_remove" size={16} />
@@ -781,6 +996,15 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-3);
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .panel-actions :global(.btn-secondary) {
+    color: #fff;
+    background: linear-gradient(135deg, #d6455d, #a61d36);
+    border: 0;
+    box-shadow: 0 8px 18px rgba(191, 39, 63, 0.22);
   }
 
   .sync-status {
@@ -914,6 +1138,36 @@
     gap: 0.55rem;
   }
 
+  .selection-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.35rem 0.2rem 0.15rem;
+  }
+
+  .select-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .select-all input {
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: var(--color-primary-500);
+    cursor: pointer;
+  }
+
+  .selection-hint {
+    margin: 0;
+    font-size: 0.78rem;
+  }
+
   .row {
     display: flex;
     justify-content: space-between;
@@ -922,11 +1176,48 @@
     border-radius: var(--radius-md);
     padding: 0.75rem 0.85rem;
     background: color-mix(in srgb, var(--color-surface-low), var(--color-surface-card) 50%);
+    transition: border-color 120ms ease, background-color 120ms ease, opacity 120ms ease;
   }
 
   .row:hover {
     border-color: color-mix(in srgb, var(--color-primary-500), transparent 65%);
     background: var(--color-surface-card);
+  }
+
+  .row-selected {
+    border-color: color-mix(in srgb, var(--color-primary-500), transparent 45%);
+    background: color-mix(in srgb, var(--color-primary-500), transparent 94%);
+  }
+
+  .row-busy {
+    opacity: 0.72;
+  }
+
+  .identity-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-width: 0;
+  }
+
+  .row-select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    cursor: pointer;
+  }
+
+  .row-select.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .row-select input {
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: var(--color-primary-500);
+    cursor: inherit;
   }
 
   .identity-link {
@@ -936,6 +1227,7 @@
     min-width: 0;
     color: inherit;
     text-decoration: none;
+    flex: 1;
   }
 
   .identity-stack {
