@@ -74,12 +74,12 @@
     }
 
     const confirmed = await confirmDialog({
-      title: $t('common.delete'),
-      text: $t('user.confirmDelete', { email: data.user.email }),
+      title: $t('user.deleteAccount'),
+      text: $t('user.confirmDeleteCloudflare', { email: data.user.email }),
       icon: 'warning',
       detailLabel: $t('common.email'),
       detailValue: data.user.email,
-      confirmButtonText: $t('common.delete'),
+      confirmButtonText: $t('user.deleteAccount'),
       cancelButtonText: $t('common.cancel'),
       danger: true
     });
@@ -98,24 +98,35 @@
         }
       });
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | {
-              error?: string;
-              dependencies?: { emails?: number; loginSessions?: number };
-            }
-          | null;
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            dependencies?: { emails?: number; loginSessions?: number };
+            routing?: { ok: boolean; skipped: boolean; deletedRuleIds: string[]; message: string };
+          }
+        | null;
 
+      if (!response.ok) {
         if (payload?.dependencies) {
           errorMessage = `${payload.error ?? $t('user.deleteBlocked')} (email: ${payload.dependencies.emails ?? 0}, sesi: ${payload.dependencies.loginSessions ?? 0})`;
         } else {
-          errorMessage = payload?.error ?? 'Gagal menghapus pengguna.';
+          errorMessage = payload?.error ?? $t('user.deleteFailedGeneric');
         }
         void errorToast($t('user.noticeActionFailed'), errorMessage);
         return;
       }
 
-      void successToast($t('common.delete'), $t('user.disabledMessage', { email: data.user.email, message: '' }));
+      const routingMessage = payload?.routing
+        ? !payload.routing.ok
+          ? $t('user.routeCleanupCheck')
+          : payload.routing.deletedRuleIds.length > 0
+            ? $t('user.routeDeletedCloudflare', { count: payload.routing.deletedRuleIds.length })
+            : $t('user.routeNoneCloudflare')
+        : '';
+      void successToast(
+        $t('user.noticeDeletedTitle'),
+        $t('user.deletedMessage', { email: data.user.email, message: routingMessage })
+      );
       await goto('/users');
     } catch {
       errorMessage = 'Tidak bisa menghubungi server. Coba lagi.';
@@ -164,7 +175,7 @@
             <div class="actions">
               <Button href="/users" variant="ghost">{$t('common.cancel')}</Button>
               <Button type="button" variant="secondary" disabled={isDeleting || isSubmitting} on:click={handleDelete}>
-                {isDeleting ? 'Menghapus...' : $t('common.delete')}
+                {isDeleting ? $t('user.bulkDeleting') : $t('user.deleteAccount')}
               </Button>
               <Button type="submit" disabled={isSubmitting || isDeleting}>
                 {isSubmitting ? $t('common.saving') : $t('common.saveChanges')}
