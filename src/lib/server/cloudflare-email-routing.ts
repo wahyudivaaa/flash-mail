@@ -74,10 +74,10 @@ export async function ensureEmailRoutingRuleForUser(
     };
   }
 
-  const zoneId =
-    (await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, normalizedEmail)) ||
-    env?.CLOUDFLARE_ZONE_ID?.trim() ||
-    '';
+  // Same rule as the catch-all path: only use the zone that actually owns this
+  // domain. Blending in the env-wide CLOUDFLARE_ZONE_ID created rules on
+  // flashdev.org for addresses on unrelated managed domains.
+  const zoneId = await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, normalizedEmail);
   const validZoneId = isCloudflareZoneId(zoneId)
     ? zoneId
     : token
@@ -169,10 +169,11 @@ export async function ensureCatchAllEmailRoutingRule(
     };
   }
 
-  let zoneId =
-    (await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, domain)) ||
-    env?.CLOUDFLARE_ZONE_ID?.trim() ||
-    '';
+  // Resolve the zone for THIS domain only. Falling back to the env-wide
+  // CLOUDFLARE_ZONE_ID used to point new domains at the default zone
+  // (flashdev.org), which silently created the catch-all rule on the wrong
+  // zone and left the new domain unable to receive mail.
+  let zoneId = await getZoneIdForEmailDomain(db, env as MailDomainsEnv | undefined, domain);
   // Zone id must be a UUID. If mail_domains has garbage/empty, resolve via CF API by domain name.
   if (!isCloudflareZoneId(zoneId)) {
     zoneId = '';

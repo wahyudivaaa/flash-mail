@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { ensureCloudflareMailboxDomainSetup } from '$lib/server/cloudflare-domain-setup';
+import { provisionMailDomain } from '$lib/server/mail-domain-provision';
 import { getMailDomainByName, getMailDomains, removeMailDomain, sanitizeDomain, setDefaultMailDomain, upsertMailDomain } from '$lib/server/mail-domains';
 
 export const PATCH: RequestHandler = async ({ platform, params, request, locals }) => {
@@ -41,24 +41,40 @@ export const PATCH: RequestHandler = async ({ platform, params, request, locals 
         return json({ error: 'Domain tidak ditemukan' }, { status: 404 });
       }
 
-      const setup = await ensureCloudflareMailboxDomainSetup(platform?.env, normalizedDomain);
+      // Re-run full provisioning (zone, Email Routing DNS, catch-all) so a
+      // "Sync" click repairs a domain that was added before its nameservers
+      // were delegated, or whose routing rule was removed.
+      const provision = await provisionMailDomain(platform?.env, db, normalizedDomain);
       const domains = await upsertMailDomain(db, platform?.env, {
         domain: normalizedDomain,
-        zoneId: setup.zoneId || existing.zoneId,
-        status: setup.zoneStatus,
-        nameservers: setup.nameservers,
+        zoneId: provision.zoneId || existing.zoneId,
+        status: provision.zoneStatus,
+        nameservers: provision.nameservers,
         isDefault: existing.isDefault,
-        emailRoutingEnabled: setup.emailRoutingEnabled,
-        emailRoutingStatus: setup.emailRoutingStatus,
-        lastSetupMessage: setup.message,
-        lastSyncedAt: new Date().toISOString()
+        emailRoutingEnabled: provision.emailRoutingEnabled,
+        emailRoutingStatus: provision.emailRoutingStatus,
+        lastSetupMessage: provision.message,
+        lastSyncedAt: new Date().toISOString(),
+        ready: provision.ready,
+        readinessState: provision.state,
+        delegationInstructions: provision.delegationInstructions
       });
 
       return json({
         ok: true,
         payload: {
           domains,
-          setup
+          provision,
+          setup: {
+            ok: provision.state !== 'failed',
+            created: provision.zoneCreated,
+            zoneId: provision.zoneId,
+            zoneStatus: provision.zoneStatus,
+            nameservers: provision.nameservers,
+            emailRoutingEnabled: provision.emailRoutingEnabled,
+            emailRoutingStatus: provision.emailRoutingStatus,
+            message: provision.message
+          }
         }
       });
     }

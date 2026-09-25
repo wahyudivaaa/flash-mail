@@ -105,6 +105,38 @@
       ? `${outlookMailboxLocalPart.trim().toLowerCase().replace(/^@+/, '')}@${outlookDomain}`
       : '';
 
+  function resolveReadiness(domain: MailDomainDto): { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' } {
+    const state = domain.readinessState?.trim();
+    if (state === 'ready') {
+      return { label: $t('worker.domainReady'), tone: 'success' };
+    }
+    if (state === 'awaiting-nameservers') {
+      return { label: $t('worker.domainAwaitingNameservers'), tone: 'warning' };
+    }
+    if (state === 'routing-pending') {
+      return { label: $t('worker.domainRoutingPending'), tone: 'warning' };
+    }
+    if (state === 'failed') {
+      return { label: $t('worker.domainFailed'), tone: 'danger' };
+    }
+    // Domains saved before readiness tracking existed fall back to raw status.
+    return domain.emailRoutingEnabled && domain.status === 'active'
+      ? { label: $t('worker.domainReady'), tone: 'success' }
+      : { label: formatStatus(domain.status), tone: 'neutral' };
+  }
+
+  async function copyNameservers(domain: MailDomainDto): Promise<void> {
+    if (domain.nameservers.length === 0) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(domain.nameservers.join(', '));
+      void successToast($t('worker.domainCopyNameservers'), domain.nameservers.join(', '));
+    } catch (error) {
+      void errorToast($t('user.noticeActionFailed'), error instanceof Error ? error.message : 'Clipboard tidak tersedia');
+    }
+  }
+
   function formatStatus(value: string): string {
     const normalized = value.trim().toLowerCase();
     const labels: Record<string, string> = {
@@ -994,6 +1026,7 @@
                 {#if domain.isDefault}
                   <Badge tone="success">{$t('worker.defaultLabel')}</Badge>
                 {/if}
+                <Badge tone={resolveReadiness(domain).tone}>{resolveReadiness(domain).label}</Badge>
               </div>
               <div class="domain-details">
                 <span>Zone: {domain.zoneId || '-'}</span>
@@ -1004,7 +1037,15 @@
                 <div class="domain-nameservers">
                   <span class="label">{$t('worker.nameserver')}</span>
                   <code>{domain.nameservers.join(', ')}</code>
+                  <Button type="button" variant="ghost" on:click={() => copyNameservers(domain)}>
+                    {$t('worker.domainCopyNameservers')}
+                  </Button>
                 </div>
+              {/if}
+              {#if domain.readinessState === 'awaiting-nameservers'}
+                <p class="feedback">{$t('worker.domainAwaitingHint')}</p>
+              {:else if domain.readinessState === 'ready'}
+                <p class="feedback success">{$t('worker.domainReadyHint')}</p>
               {/if}
               {#if domain.lastSetupMessage}
                 <p class="feedback">{domain.lastSetupMessage}</p>

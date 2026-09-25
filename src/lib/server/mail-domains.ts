@@ -15,6 +15,9 @@ interface PersistedMailDomainRecord {
   emailRoutingStatus?: string;
   lastSetupMessage?: string;
   lastSyncedAt?: string;
+  ready?: boolean;
+  readinessState?: string;
+  delegationInstructions?: string;
 }
 
 const MAIL_DOMAINS_KEY = 'mail_domains_json';
@@ -199,7 +202,12 @@ export async function upsertMailDomain(
     emailRoutingEnabled: Boolean(next.emailRoutingEnabled ?? currentRecord?.emailRoutingEnabled ?? false),
     emailRoutingStatus: String(next.emailRoutingStatus ?? currentRecord?.emailRoutingStatus ?? 'unknown').trim() || 'unknown',
     lastSetupMessage: String(next.lastSetupMessage ?? currentRecord?.lastSetupMessage ?? '').trim(),
-    lastSyncedAt: String(next.lastSyncedAt ?? currentRecord?.lastSyncedAt ?? '').trim()
+    lastSyncedAt: String(next.lastSyncedAt ?? currentRecord?.lastSyncedAt ?? '').trim(),
+    ready: Boolean(next.ready ?? currentRecord?.ready ?? false),
+    readinessState: String(next.readinessState ?? currentRecord?.readinessState ?? '').trim(),
+    delegationInstructions: String(
+      next.delegationInstructions ?? currentRecord?.delegationInstructions ?? ''
+    ).trim()
   };
 
   const updated = [...current];
@@ -267,7 +275,10 @@ async function persistMailDomains(db: D1Database, domains: MailDomainDto[]): Pro
     emailRoutingEnabled: domain.emailRoutingEnabled,
     emailRoutingStatus: domain.emailRoutingStatus,
     lastSetupMessage: domain.lastSetupMessage,
-    lastSyncedAt: domain.lastSyncedAt
+    lastSyncedAt: domain.lastSyncedAt,
+    ready: domain.ready === true,
+    readinessState: String(domain.readinessState ?? '').trim(),
+    delegationInstructions: String(domain.delegationInstructions ?? '').trim()
   }));
 
   await upsertWorkerSettingValue(db, MAIL_DOMAINS_KEY, JSON.stringify(sanitized));
@@ -358,7 +369,10 @@ function normalizePersistedDomain(value: unknown): MailDomainDto | null {
     emailRoutingEnabled: raw.emailRoutingEnabled === true,
     emailRoutingStatus: String(raw.emailRoutingStatus ?? 'unknown').trim() || 'unknown',
     lastSetupMessage: String(raw.lastSetupMessage ?? '').trim(),
-    lastSyncedAt: String(raw.lastSyncedAt ?? '').trim()
+    lastSyncedAt: String(raw.lastSyncedAt ?? '').trim(),
+    ready: raw.ready === true,
+    readinessState: String(raw.readinessState ?? '').trim(),
+    delegationInstructions: String(raw.delegationInstructions ?? '').trim()
   };
 }
 

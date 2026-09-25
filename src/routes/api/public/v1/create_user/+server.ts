@@ -5,7 +5,7 @@ import { createUniqueEmailAliasInDb, createUserInDb, softDeleteUserInDb } from '
 import { generateSecurePassword, hashPassword } from '$lib/server/security';
 import { sendUserCreatedTelegramNotification } from '$lib/server/telegram';
 import { ensureEmailRoutingRuleForUser } from '$lib/server/cloudflare-email-routing';
-import { getMailDomains, resolveRequestedMailDomain, type MailDomainsEnv } from '$lib/server/mail-domains';
+import { getMailDomainByName, getMailDomains, resolveRequestedMailDomain, type MailDomainsEnv } from '$lib/server/mail-domains';
 import {
   getExternalMailRoutingMessage,
   getExternalMailProvider,
@@ -50,6 +50,21 @@ export const POST: RequestHandler = async ({ platform, request }) => {
     const configuredDomain = isExternalMailDomain(requestedDomain)
       ? requestedDomain
       : await resolveRequestedMailDomain(db, platform?.env, requestedDomain);
+
+    // Fail fast with actionable guidance when the domain still needs nameserver
+    // delegation. Without this the caller only saw a generic Cloudflare routing
+    // error, which does not say what to do next.
+    if (!isExternalMailDomain(configuredDomain)) {
+      const record = await getMailDomainByName(db, platform?.env, configuredDomain);
+      if (record && record.ready === false && record.readinessState === 'awaiting-nameservers') {
+        return publicError(
+          409,
+          'CONFLICT',
+          `Domain ${configuredDomain} belum siap menerima email: ${record.delegationInstructions || 'nameserver belum diarahkan ke Cloudflare'}`
+        );
+      }
+    }
+
     const externalProvider = getExternalMailProvider(configuredDomain);
     const email = `${usernameRaw}@${configuredDomain}`;
     const externalForwardingAddress = externalProvider

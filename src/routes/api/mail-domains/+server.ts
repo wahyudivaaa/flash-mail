@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { ensureCloudflareMailboxDomainSetup } from '$lib/server/cloudflare-domain-setup';
+import { provisionMailDomain } from '$lib/server/mail-domain-provision';
 import { getMailDomains, isValidDomain, sanitizeDomain, upsertMailDomain } from '$lib/server/mail-domains';
 
 export const GET: RequestHandler = async ({ platform }) => {
@@ -45,36 +45,54 @@ export const POST: RequestHandler = async ({ platform, request, locals }) => {
   const setDefault = body?.setDefault === true;
 
   try {
-    const setupResult = setupCloudflare
-      ? await ensureCloudflareMailboxDomainSetup(platform?.env, normalizedDomain)
-      : {
-          ok: true,
-          created: false,
-          zoneId: '',
-          zoneStatus: 'unknown',
-          nameservers: [],
-          emailRoutingEnabled: false,
-          emailRoutingStatus: 'unknown',
-          message: 'Penyiapan Cloudflare dilewati'
-        };
+    // Provisioning runs both Cloudflare steps -- zone + Email Routing DNS, then
+    // the catch-all routing rule -- so a freshly added domain can accept mail
+    // right away instead of needing a separate repair call.
+    const provision = setupCloudflare
+      ? await provisionMailDomain(platform?.env, db, normalizedDomain)
+      : null;
 
     const domains = await upsertMailDomain(db, platform?.env, {
       domain: normalizedDomain,
-      zoneId: setupResult.zoneId,
-      status: setupResult.zoneStatus,
-      nameservers: setupResult.nameservers,
+      zoneId: provision?.zoneId ?? '',
+      status: provision?.zoneStatus ?? 'unknown',
+      nameservers: provision?.nameservers ?? [],
       isDefault: setDefault,
-      emailRoutingEnabled: setupResult.emailRoutingEnabled,
-      emailRoutingStatus: setupResult.emailRoutingStatus,
-      lastSetupMessage: setupResult.message,
-      lastSyncedAt: new Date().toISOString()
+      emailRoutingEnabled: provision?.emailRoutingEnabled ?? false,
+      emailRoutingStatus: provision?.emailRoutingStatus ?? 'unknown',
+      lastSetupMessage: provision?.message ?? 'Penyiapan Cloudflare dilewati',
+      lastSyncedAt: new Date().toISOString(),
+      ready: provision?.ready ?? false,
+      readinessState: provision?.state ?? '',
+      delegationInstructions: provision?.delegationInstructions ?? ''
     });
 
     return json({
       ok: true,
       payload: {
         domains,
-        setup: setupResult
+        provision,
+        setup: provision
+          ? {
+              ok: provision.state !== 'failed',
+              created: provision.zoneCreated,
+              zoneId: provision.zoneId,
+              zoneStatus: provision.zoneStatus,
+              nameservers: provision.nameservers,
+              emailRoutingEnabled: provision.emailRoutingEnabled,
+              emailRoutingStatus: provision.emailRoutingStatus,
+              message: provision.message
+            }
+          : {
+              ok: true,
+              created: false,
+              zoneId: '',
+              zoneStatus: 'unknown',
+              nameservers: [],
+              emailRoutingEnabled: false,
+              emailRoutingStatus: 'unknown',
+              message: 'Penyiapan Cloudflare dilewati'
+            }
       }
     });
   } catch (error) {

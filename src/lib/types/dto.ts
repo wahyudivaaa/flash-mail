@@ -84,6 +84,12 @@ export interface MailDomainDto {
   emailRoutingStatus: string;
   lastSetupMessage: string;
   lastSyncedAt: string;
+  /** Whether new mailboxes on this domain can already receive mail. */
+  ready?: boolean;
+  /** Machine-readable readiness: ready | awaiting-nameservers | routing-pending | failed. */
+  readinessState?: string;
+  /** Registrar-facing instruction when the domain still needs nameserver delegation. */
+  delegationInstructions?: string;
 }
 
 export interface OutlookConfigStatusDto {
