@@ -583,7 +583,7 @@
     domainError = '';
 
     try {
-      const response = await fetch('/api/mail-domains', {
+      const response = await fetch('/api/mail-domains?verify=1', {
         method: 'GET',
         headers: {
           'content-type': 'application/json'

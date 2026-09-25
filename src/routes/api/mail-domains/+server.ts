@@ -1,17 +1,50 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { provisionMailDomain } from '$lib/server/mail-domain-provision';
+import { inspectMailDomainReadiness, provisionMailDomain } from '$lib/server/mail-domain-provision';
 import { getMailDomains, isValidDomain, sanitizeDomain, upsertMailDomain } from '$lib/server/mail-domains';
 
-export const GET: RequestHandler = async ({ platform }) => {
-  const domains = await getMailDomains(platform?.env?.DB, platform?.env);
-  return json({
-    ok: true,
-    payload: {
-      domains
-    }
-  });
+export const GET: RequestHandler = async ({ platform, url }) => {
+  const db = platform?.env?.DB;
+  const domains = await getMailDomains(db, platform?.env);
+
+  // Domains saved before readiness tracking existed carry no state, which made
+  // the settings page fall back to raw status labels. Verifying is a live
+  // Cloudflare round trip per domain, so it only runs when asked for.
+  if (url.searchParams.get('verify') !== '1' || !db) {
+    return json({ ok: true, payload: { domains } });
+  }
+
+  const verified = await Promise.all(
+    domains.map(async (record) => {
+      const readiness = await inspectMailDomainReadiness(platform?.env, db, record);
+      return { ...record, ...toReadinessFields(readiness) };
+    })
+  );
+
+  return json({ ok: true, payload: { domains: verified } });
 };
+
+function toReadinessFields(readiness: {
+  ready: boolean;
+  state: string;
+  delegationInstructions: string;
+  zoneStatus: string;
+  nameservers: string[];
+  emailRoutingEnabled: boolean;
+  emailRoutingStatus: string;
+  message: string;
+}) {
+  return {
+    ready: readiness.ready,
+    readinessState: readiness.state,
+    delegationInstructions: readiness.delegationInstructions,
+    status: readiness.zoneStatus,
+    nameservers: readiness.nameservers,
+    emailRoutingEnabled: readiness.emailRoutingEnabled,
+    emailRoutingStatus: readiness.emailRoutingStatus,
+    lastSetupMessage: readiness.message
+  };
+}
 
 export const POST: RequestHandler = async ({ platform, request, locals }) => {
   if (!locals.authenticated) {

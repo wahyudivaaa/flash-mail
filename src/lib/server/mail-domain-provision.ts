@@ -127,11 +127,14 @@ function resolveReadinessState(
   zoneActive: boolean,
   catchAllRuleId: string
 ): MailDomainReadinessState {
-  if (!setup.ok) {
-    return 'failed';
-  }
+  // A pending zone is not a failure: the domain is registered and Cloudflare is
+  // waiting for the nameserver delegation. Email Routing cannot be enabled until
+  // the zone goes active, so `setup.ok` is false here by design.
   if (!zoneActive) {
     return 'awaiting-nameservers';
+  }
+  if (!setup.ok) {
+    return 'failed';
   }
   if (!setup.emailRoutingEnabled || !catchAllRuleId) {
     return 'routing-pending';
@@ -152,7 +155,7 @@ function buildMessage(
     case 'awaiting-nameservers':
       return `${domain} terdaftar, tapi Cloudflare masih menunggu delegasi nameserver (status zone: ${zoneStatus}). ${
         nameservers.length > 0 ? `Arahkan nameserver ke: ${nameservers.join(', ')}.` : ''
-      }`.trim();
+      } Setelah aktif, klik Sinkronkan Cloudflare untuk mengaktifkan routing.`.trim();
     case 'routing-pending':
       return `${domain} sudah aktif di Cloudflare, tapi catch-all Email Routing belum siap. ${catchAllMessage}`.trim();
     default:
