@@ -11,7 +11,7 @@
 
   export let data: PageData;
 
-  const AUTO_REFRESH_INTERVAL_MS = 5000;
+  const AUTO_REFRESH_INTERVAL_MS = 60000;
 
   let dashboard: DashboardDto = data.dashboard;
   let autoRefreshing = false;

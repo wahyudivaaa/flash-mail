@@ -28,7 +28,7 @@
 
   export let data: PageData;
 
-  const AUTO_REFRESH_INTERVAL_MS = 5000;
+  const AUTO_REFRESH_INTERVAL_MS = 60000;
   const DAY_MS = 24 * 60 * 60 * 1000;
   const statusFilters: ClaimFilter[] = ['all', 'active', 'deactivated'];
 

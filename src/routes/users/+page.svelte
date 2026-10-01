@@ -10,7 +10,7 @@
 
   export let data: PageData;
 
-  const AUTO_REFRESH_INTERVAL_MS = 5000;
+  const AUTO_REFRESH_INTERVAL_MS = 60000;
   const SEARCH_DEBOUNCE_MS = 300;
 
   let searchQuery = data.initialQuery ?? '';

@@ -119,9 +119,17 @@ export interface ApplyEmailQuickActionResult {
   email?: EmailActionState;
 }
 
+const DASHBOARD_METRICS_CACHE_TTL_MS = 60_000;
+let dashboardMetricsCache: { at: number; value: DashboardDto } | null = null;
+
 export async function getDashboardMetrics(db?: D1Database): Promise<DashboardDto> {
   if (!db) {
     return dashboardFallback;
+  }
+
+  const now = Date.now();
+  if (dashboardMetricsCache && now - dashboardMetricsCache.at < DASHBOARD_METRICS_CACHE_TTL_MS) {
+    return dashboardMetricsCache.value;
   }
 
   const [users, emails, unread, starred, archived, deleted] = await Promise.all([
@@ -133,7 +141,7 @@ export async function getDashboardMetrics(db?: D1Database): Promise<DashboardDto
     db.prepare('SELECT COUNT(*) AS count FROM emails WHERE deleted_at IS NOT NULL').first<{ count: number }>()
   ]);
 
-  return {
+  const value: DashboardDto = {
     metrics: [
       { key: 'users', label: 'Pengguna Terdaftar', value: String(users?.count ?? 0), status: 'ok' },
       { key: 'emails', label: 'Data Email', value: String(emails?.count ?? 0), status: 'ok' },
@@ -143,6 +151,8 @@ export async function getDashboardMetrics(db?: D1Database): Promise<DashboardDto
       { key: 'deleted', label: 'Dihapus Sementara', value: String(deleted?.count ?? 0), status: 'critical' }
     ]
   };
+  dashboardMetricsCache = { at: now, value };
+  return value;
 }
 
 export async function getUsersFromDb(db?: D1Database, options: GetUsersOptions = {}): Promise<UserDto[]> {
